@@ -2,703 +2,463 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import logging
-import sys
-import os
-from datetime import datetime
-import time
 import requests
+import re
+from datetime import datetime
 import plotly.express as px
-from typing import Dict, List, Any
+import plotly.graph_objects as go
+from collections import Counter
+import time
+import random
 
-# --- CONFIG ---
+# Optional NLP imports
+try:
+    from textblob import TextBlob
+    TEXTBLOB_AVAILABLE = True
+except ImportError:
+    TEXTBLOB_AVAILABLE = False
+
+try:
+    from wordcloud import WordCloud, STOPWORDS
+    WORDCLOUD_AVAILABLE = True
+except ImportError:
+    WORDCLOUD_AVAILABLE = False
+
+# --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="Reddit Sentiment Analyzer Pro",
-    page_icon="🔥",
+    page_title="Reddit Analytics Ultimate",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- CUSTOM CSS ---
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(120deg, #ff4500, #ff8700);
+        padding: 30px;
+        border-radius: 20px;
+        color: white;
+        margin-bottom: 30px;
+        box-shadow: 0 10px 25px rgba(255, 69, 0, 0.3);
+    }
+    .kpi-card {
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 15px;
+        border-left: 5px solid #ff4500;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+        text-align: center;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f0f2f6;
+        border-radius: 10px 10px 0 0;
+        gap: 1px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #ff4500;
+        color: white;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- 1. ADVANCED SENTIMENT ANALYZER ---
-class AdvancedSentimentAnalyzer:
-    """Enhanced sentiment analysis with better accuracy"""
-    
-    def __init__(self):
-        logger.info("🔄 Initializing Advanced Sentiment Analyzer")
-        
-        # Expanded sentiment dictionaries
-        self.positive_words = {
-            'good', 'great', 'excellent', 'awesome', 'amazing', 'fantastic',
-            'wonderful', 'perfect', 'love', 'like', 'nice', 'cool', 'best',
-            'fantastic', 'brilliant', 'outstanding', 'superb', 'terrific',
-            'happy', 'pleased', 'satisfied', 'impressed', 'recommend',
-            'beautiful', 'thank', 'thanks', 'useful', 'helpful', 'smart',
-            'agree', 'right', 'clean', 'fast', 'easy', 'smooth', 'fun',
-            'enjoy', 'enjoyable', 'pleasure', 'delight', 'marvelous',
-            'exceptional', 'flawless', 'seamless', 'intuitive', 'responsive'
-        }
-        
-        self.negative_words = {
-            'bad', 'terrible', 'awful', 'horrible', 'worst', 'hate',
-            'dislike', 'stupid', 'ridiculous', 'useless', 'waste', 'poor',
-            'slow', 'buggy', 'broken', 'garbage', 'trash', 'pain', 'error',
-            'wrong', 'ugly', 'sad', 'boring', 'messy', 'fail', 'awful',
-            'disappointing', 'frustrating', 'annoying', 'confusing',
-            'complicated', 'crashed', 'freeze', 'lag', 'glitch', 'janky'
-        }
-        
-        # Strong sentiment modifiers
-        self.strong_positive = {'love', 'amazing', 'awesome', 'fantastic', 'perfect', 'brilliant'}
-        self.strong_negative = {'hate', 'terrible', 'horrible', 'disgusting', 'awful', 'worst'}
-        
-        # Negations
-        self.negations = {'not', "don't", 'never', 'no', 'cannot', "won't", "can't"}
-        
-    def analyze(self, text: str) -> Dict[str, Any]:
-        """Analyze sentiment with enhanced logic"""
-        if not text or len(text.strip()) < 3:
-            return {'sentiment': 'neutral', 'score': 0.0, 'confidence': 0.5}
-        
-        try:
-            text_lower = text.lower()
-            words = text_lower.split()
-            
-            positive_score = 0
-            negative_score = 0
-            
-            # Analyze each word with weights
-            for word in words:
-                if word in self.strong_positive:
-                    positive_score += 3
-                elif word in self.positive_words:
-                    positive_score += 1
-                elif word in self.strong_negative:
-                    negative_score += 3
-                elif word in self.negative_words:
-                    negative_score += 1
-            
-            # Check for negations
-            for i, word in enumerate(words):
-                if word in self.negations and i + 1 < len(words):
-                    next_word = words[i + 1]
-                    if next_word in self.positive_words:
-                        negative_score += 2
-                        positive_score = max(0, positive_score - 1)
-                    elif next_word in self.negative_words:
-                        positive_score += 2
-                        negative_score = max(0, negative_score - 1)
-            
-            # Calculate final sentiment
-            total_words = len(words)
-            if total_words == 0:
-                return {'sentiment': 'neutral', 'score': 0.0, 'confidence': 0.5}
-            
-            positive_ratio = positive_score / total_words
-            negative_ratio = negative_score / total_words
-            
-            sentiment_threshold = 0.02
-            
-            if positive_ratio > negative_ratio + sentiment_threshold:
-                sentiment = 'positive'
-                confidence = min(0.95, 0.6 + positive_ratio)
-            elif negative_ratio > positive_ratio + sentiment_threshold:
-                sentiment = 'negative'
-                confidence = min(0.95, 0.6 + negative_ratio)
-            else:
-                sentiment = 'neutral'
-                confidence = 0.5
-            
-            # Calculate score for visualization
-            score = confidence if sentiment == 'positive' else -confidence if sentiment == 'negative' else 0.0
-            
-            return {
-                'sentiment': sentiment,
-                'score': float(score),
-                'confidence': float(confidence),
-                'positive_words': positive_score,
-                'negative_words': negative_score
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in sentiment analysis: {e}")
-            return {'sentiment': 'neutral', 'score': 0.0, 'confidence': 0.5}
-    
-    def get_model_info(self):
-        """Return model information"""
-        return {
-            'model_name': 'Advanced Rule-based Engine',
-            'model_type': 'Enhanced Keyword Analysis',
-            'status': 'active'
-        }
+# --- 1. DATA ENGINE ---
 
-# Initialize analyzer
-sentiment_analyzer = AdvancedSentimentAnalyzer()
-
-# --- 2. ENHANCED REAL DATA LOADER ---
-class EnhancedRedditLoader:
-    """
-    Enhanced Reddit data loader with better error handling and performance
-    """
-    
+class RedditLoader:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        })
-    
-    def fetch_data(self, url: str) -> Dict[str, Any]:
-        """Fetch real data from Reddit with enhanced error handling"""
-        
-        # Prepare JSON URL
-        if not url.endswith('.json'):
-            if '?' in url:
-                parts = url.split('?')
-                json_url = parts[0] + '.json?' + parts[1]
-            else:
-                json_url = url.rstrip('/') + '.json'
-        else:
-            json_url = url
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Streamlit Analytics Pro)'})
 
+    def fetch(self, url):
+        clean_url = (url.split('?')[0] if '?' in url else url.rstrip('/')) + '.json'
         try:
-            logger.info(f"Fetching data from: {json_url}")
-            response = self.session.get(json_url, timeout=15)
+            resp = self.session.get(clean_url, timeout=15)
+            if resp.status_code != 200: return {'success': False, 'error': f'HTTP {resp.status_code}'}
+            data = resp.json()
             
-            # Enhanced error handling
-            if response.status_code == 429:
-                return {
-                    'success': False, 
-                    'error': 'Reddit is temporarily blocking requests. Please wait 1-2 minutes and try again.'
-                }
-            elif response.status_code == 403:
-                return {
-                    'success': False,
-                    'error': 'Access forbidden. Reddit may be blocking automated requests.'
-                }
-            elif response.status_code != 200:
-                return {
-                    'success': False,
-                    'error': f'Failed to load data. HTTP Status: {response.status_code}'
-                }
-
-            data = response.json()
+            post = data[0]['data']['children'][0]['data']
+            comments = []
             
-            # Parse post data
-            post_info = data[0]['data']['children'][0]['data']
-            parsed_post = self._parse_post_data(post_info, url)
+            # Recursive function to get nested comments (Limited depth)
+            def process_comments(children_list):
+                for item in children_list:
+                    if item['kind'] == 't1':
+                        d = item['data']
+                        body = d.get('body', '')
+                        if body and body not in ['[deleted]', '[removed]']:
+                            comments.append({
+                                'id': d.get('id'),
+                                'author': d.get('author', 'Unknown'),
+                                'body': body,
+                                'score': d.get('score', 0),
+                                'created_utc': d.get('created_utc'),
+                                'timestamp': datetime.fromtimestamp(d.get('created_utc', 0)),
+                                'depth': d.get('depth', 0)
+                            })
             
-            # Parse comments with enhanced filtering
-            comments_raw = data[1]['data']['children']
-            parsed_comments = self._parse_comments(comments_raw)
+            process_comments(data[1]['data']['children'])
             
-            logger.info(f"Successfully fetched {len(parsed_comments)} comments from r/{parsed_post['subreddit']}")
-
             return {
                 'success': True,
-                'post_data': parsed_post,
-                'comments': parsed_comments,
-                'analysis_timestamp': datetime.now(),
-                'source': 'Reddit Live JSON',
-                'total_comments_found': len(comments_raw)
+                'meta': {
+                    'title': post.get('title'),
+                    'subreddit': post.get('subreddit'),
+                    'score': post.get('score'),
+                    'upvote_ratio': post.get('upvote_ratio'),
+                    'comments_count': post.get('num_comments'),
+                    'author': post.get('author'),
+                    'created': datetime.fromtimestamp(post.get('created_utc'))
+                },
+                'comments': comments
             }
-
-        except requests.exceptions.Timeout:
-            return {'success': False, 'error': 'Request timed out. Please try again.'}
-        except requests.exceptions.ConnectionError:
-            return {'success': False, 'error': 'Connection error. Check your internet connection.'}
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            return {'success': False, 'error': f'Unexpected error: {str(e)}'}
-    
-    def _parse_post_data(self, post_info: Dict, url: str) -> Dict[str, Any]:
-        """Parse post data with enhanced fields"""
-        return {
-            'title': post_info.get('title', 'No Title'),
-            'author': post_info.get('author', 'Unknown'),
-            'subreddit': post_info.get('subreddit', 'Unknown'),
-            'score': post_info.get('score', 0),
-            'upvote_ratio': post_info.get('upvote_ratio', 0.0),
-            'num_comments': post_info.get('num_comments', 0),
-            'url': url,
-            'created_utc': datetime.fromtimestamp(post_info.get('created_utc', 0)),
-            'flair': post_info.get('link_flair_text', 'No Flair'),
-            'post_id': post_info.get('id', ''),
-            'subreddit_subscribers': post_info.get('subreddit_subscribers', 0)
+            return {'success': False, 'error': str(e)}
+
+# --- 2. NLP INTELLIGENCE ENGINE ---
+
+class NLPEngine:
+    def __init__(self):
+        # Emotional lexicon (Simplified)
+        self.emotions = {
+            'Anger': {'hate', 'stupid', 'garbage', 'trash', 'idiot', 'worst', 'angry', 'mad', 'furious', 'annoying', 'buggy'},
+            'Joy': {'love', 'great', 'awesome', 'happy', 'fun', 'enjoy', 'perfect', 'beautiful', 'glad', 'excited'},
+            'Trust': {'secure', 'safe', 'agree', 'true', 'support', 'trust', 'recommend', 'reliable', 'solid'},
+            'Fear': {'scary', 'worry', 'risk', 'dangerous', 'afraid', 'loss', 'crash', 'broke', 'hack', 'alert'},
+            'Anticipation': {'wait', 'hope', 'coming', 'soon', 'expect', 'looking', 'future', 'wish', 'hyped'}
         }
-    
-    def _parse_comments(self, comments_raw: List) -> List[Dict[str, Any]]:
-        """Parse comments with enhanced filtering and limits"""
-        parsed_comments = []
         
-        for item in comments_raw:
-            if item['kind'] == 't1':  # Only real comments
-                c_data = item['data']
-                body = c_data.get('body', '')
-                
-                # Enhanced filtering
-                if (body and 
-                    body not in ['[deleted]', '[removed]'] and
-                    len(body.strip()) > 10 and  # Minimum length
-                    not body.startswith('Your comment is awaiting')):  # Skip moderation messages
-                    
-                    parsed_comments.append({
-                        'body': body,
-                        'author': c_data.get('author', 'Unknown'),
-                        'score': c_data.get('score', 0),
-                        'timestamp': datetime.fromtimestamp(c_data.get('created_utc', 0)),
-                        'comment_id': c_data.get('id', ''),
-                        'replies': c_data.get('replies', {}),
-                        'sentiment': 'neutral',  # Will be analyzed
-                        'confidence': 0.5
-                    })
-        
-        # Limit to reasonable number for performance
-        return parsed_comments[:150]
-
-# Initialize data loader
-reddit_loader = EnhancedRedditLoader()
-
-# --- 3. ENHANCED UI COMPONENTS ---
-
-def display_enhanced_results(data: Dict[str, Any]):
-    """Display comprehensive analysis results"""
-    
-    post = data['post_data']
-    comments = data['comments']
-    
-    st.success(f"✅ **Live Data Analysis Complete!** (Source: {data['source']})")
-    
-    # Enhanced Post Overview
-    st.header("📝 Post Overview")
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        st.metric("Post Score", f"{post['score']:,}")
-    with col2:
-        st.metric("Comments Analyzed", len(comments))
-    with col3:
-        st.metric("Subreddit", f"r/{post['subreddit']}")
-    with col4:
-        st.metric("Upvote Ratio", f"{post['upvote_ratio'] * 100:.1f}%")
-    with col5:
-        st.metric("Total Comments", f"{post['num_comments']:,}")
-    
-    st.subheader(f"**{post['title']}**")
-    st.caption(f"👤 Posted by u/{post['author']} • 🕒 {post['created_utc'].strftime('%Y-%m-%d %H:%M')} • 🏷️ Flair: {post['flair']}")
-    
-    st.divider()
-    
-    # Sentiment Analysis Section
-    st.header("📊 Advanced Sentiment Analysis")
-    
-    if not comments:
-        st.warning("No readable comments found for sentiment analysis.")
-        return
-    
-    # Progress tracking for analysis
-    progress_text = st.empty()
-    progress_bar = st.progress(0)
-    
-    sentiment_results = []
-    confidence_scores = []
-    
-    # Analyze each comment
-    for i, comment in enumerate(comments):
-        # Update progress
-        if i % 10 == 0:
-            progress = (i + 1) / len(comments)
-            progress_bar.progress(progress)
-            progress_text.text(f"🔍 Analyzing comments... {i+1}/{len(comments)}")
-        
-        # Perform sentiment analysis
-        analysis = sentiment_analyzer.analyze(comment['body'])
-        
-        # Update comment with analysis results
-        comment['sentiment'] = analysis['sentiment']
-        comment['confidence'] = analysis['confidence']
-        comment['sentiment_score'] = analysis['score']
-        
-        sentiment_results.append(analysis['sentiment'])
-        confidence_scores.append(analysis['confidence'])
-    
-    # Clear progress indicators
-    progress_text.empty()
-    progress_bar.empty()
-    
-    # Sentiment Statistics
-    sentiment_counts = pd.Series(sentiment_results).value_counts()
-    avg_confidence = np.mean(confidence_scores) if confidence_scores else 0
-    
-    # Enhanced Metrics
-    st.subheader("🎯 Sentiment Summary")
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    
-    with col1:
-        positive_count = sentiment_counts.get('positive', 0)
-        st.metric("😊 Positive", positive_count, 
-                 delta=f"{(positive_count/len(comments)*100):.1f}%" if comments else "0%")
-    
-    with col2:
-        negative_count = sentiment_counts.get('negative', 0)
-        st.metric("😠 Negative", negative_count,
-                 delta=f"{(negative_count/len(comments)*100):.1f}%" if comments else "0%")
-    
-    with col3:
-        neutral_count = sentiment_counts.get('neutral', 0)
-        st.metric("😐 Neutral", neutral_count,
-                 delta=f"{(neutral_count/len(comments)*100):.1f}%" if comments else "0%")
-    
-    with col4:
-        st.metric("📊 Avg Confidence", f"{avg_confidence:.2f}")
-    
-    with col5:
-        if sentiment_counts.any():
-            overall_sentiment = max(sentiment_counts.index, key=lambda x: sentiment_counts[x])
-            sentiment_emoji = {'positive': '😊', 'negative': '😠', 'neutral': '😐'}
-            st.metric("🎭 Overall", f"{sentiment_emoji.get(overall_sentiment, '😐')} {overall_sentiment.title()}")
+    def analyze_text(self, text):
+        # 1. Basic Sentiment
+        if TEXTBLOB_AVAILABLE:
+            blob = TextBlob(text)
+            polarity = blob.sentiment.polarity
+            subjectivity = blob.sentiment.subjectivity
         else:
-            st.metric("🎭 Overall", "Neutral")
-    
-    # Visualizations
-    if len(sentiment_counts) > 0:
-        st.subheader("📈 Visual Analytics")
-        
-        viz_col1, viz_col2 = st.columns(2)
-        
-        with viz_col1:
-            # Bar chart
-            chart_data = pd.DataFrame({
-                'Sentiment': sentiment_counts.index,
-                'Count': sentiment_counts.values
-            })
-            st.bar_chart(chart_data.set_index('Sentiment'), use_container_width=True)
-        
-        with viz_col2:
-            # Pie chart
-            try:
-                fig = px.pie(
-                    values=sentiment_counts.values,
-                    names=sentiment_counts.index,
-                    title="Sentiment Distribution",
-                    color=sentiment_counts.index,
-                    color_discrete_map={
-                        'positive': '#28a745',
-                        'negative': '#dc3545', 
-                        'neutral': '#ffc107'
-                    }
-                )
-                fig.update_traces(textposition='inside', textinfo='percent+label')
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.info("📊 Pie chart unavailable - using simplified view")
-                for sentiment, count in sentiment_counts.items():
-                    percentage = (count / len(comments)) * 100
-                    st.write(f"- **{sentiment.title()}**: {count} comments ({percentage:.1f}%)")
-    
-    # Detailed Comments Analysis
-    st.header("💬 Detailed Comment Analysis")
-    
-    # Enhanced filtering options
-    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
-    
-    with filter_col1:
-        sentiment_filter = st.selectbox(
-            "Filter by Sentiment",
-            ["All", "Positive", "Negative", "Neutral"],
-            key="sentiment_filter"
-        )
-    
-    with filter_col2:
-        confidence_filter = st.slider(
-            "Minimum Confidence",
-            0.0, 1.0, 0.3,
-            key="confidence_filter"
-        )
-    
-    with filter_col3:
-        score_filter = st.slider(
-            "Minimum Comment Score",
-            -50, 100, 0,
-            key="score_filter"
-        )
-    
-    with filter_col4:
-        sort_option = st.selectbox(
-            "Sort By",
-            ["Highest Score", "Highest Confidence", "Newest", "Oldest"],
-            key="sort_option"
-        )
-    
-    # Apply filters
-    filtered_comments = comments.copy()
-    
-    if sentiment_filter != "All":
-        filtered_comments = [c for c in filtered_comments if c['sentiment'] == sentiment_filter.lower()]
-    
-    filtered_comments = [c for c in filtered_comments if c['confidence'] >= confidence_filter]
-    filtered_comments = [c for c in filtered_comments if c['score'] >= score_filter]
-    
-    # Apply sorting
-    if sort_option == "Highest Score":
-        filtered_comments.sort(key=lambda x: x['score'], reverse=True)
-    elif sort_option == "Highest Confidence":
-        filtered_comments.sort(key=lambda x: x['confidence'], reverse=True)
-    elif sort_option == "Newest":
-        filtered_comments.sort(key=lambda x: x['timestamp'], reverse=True)
-    elif sort_option == "Oldest":
-        filtered_comments.sort(key=lambda x: x['timestamp'])
-    
-    st.write(f"**Showing {len(filtered_comments)} of {len(comments)} comments**")
-    
-    # Display filtered comments
-    for comment in filtered_comments[:25]:  # Limit display for performance
-        sentiment = comment['sentiment']
-        confidence = comment['confidence']
-        
-        # Enhanced styling
-        sentiment_config = {
-            'positive': {'color': '#28a745', 'bg_color': '#d4edda', 'emoji': '😊'},
-            'negative': {'color': '#dc3545', 'bg_color': '#f8d7da', 'emoji': '😠'},
-            'neutral': {'color': '#ffc107', 'bg_color': '#fff3cd', 'emoji': '😐'}
-        }
-        
-        config = sentiment_config.get(sentiment, sentiment_config['neutral'])
-        
-        st.markdown(f"""
-        <div style="border-left: 4px solid {config['color']}; 
-                    padding: 12px; 
-                    margin: 12px 0; 
-                    background-color: {config['bg_color']}15;
-                    border-radius: 8px;
-                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <strong style="font-size: 0.95em;">
-                    {config['emoji']} {sentiment.title()} 
-                    <span style="font-weight: normal; color: #666;">(Score: {comment['score']})</span>
-                </strong>
-                <span style="color: #666; font-size: 0.85em;">
-                    Confidence: {confidence:.2f}
-                </span>
-            </div>
-            <div style="margin: 8px 0; line-height: 1.5; font-size: 0.9em; color: #333;">
-                {comment['body']}
-            </div>
-            <div style="color: #666; font-size: 0.8em;">
-                👤 by u/{comment['author']} • 🕒 {comment['timestamp'].strftime('%Y-%m-%d %H:%M')}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Confidence progress bar
-        st.progress(float(confidence), text=f"Confidence: {confidence:.0%}")
-    
-    # Export and Additional Features
-    st.header("📤 Export & Insights")
-    
-    export_col1, export_col2, export_col3 = st.columns(3)
-    
-    with export_col1:
-        if st.button("💾 Download CSV Report", use_container_width=True):
-            df = pd.DataFrame([
-                {
-                    'Comment': comment['body'],
-                    'Author': comment['author'],
-                    'Score': comment['score'],
-                    'Sentiment': comment['sentiment'],
-                    'Confidence': comment['confidence'],
-                    'Timestamp': comment['timestamp']
-                }
-                for comment in comments
-            ])
-            
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv,
-                file_name=f"reddit_sentiment_{post['subreddit']}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-    
-    with export_col2:
-        if st.button("📊 Generate Insights", use_container_width=True):
-            positive_pct = (sentiment_counts.get('positive', 0) / len(comments)) * 100
-            negative_pct = (sentiment_counts.get('negative', 0) / len(comments)) * 100
-            
-            if positive_pct > 60:
-                overall = "Very Positive"
-                insight = "The community strongly supports this content"
-            elif positive_pct > 40:
-                overall = "Mostly Positive" 
-                insight = "Generally favorable reception with some criticism"
-            elif negative_pct > 40:
-                overall = "Mostly Negative"
-                insight = "Significant concerns or criticisms raised"
-            else:
-                overall = "Neutral/Mixed"
-                insight = "Balanced discussion with varied opinions"
-            
-            st.info(f"""
-            **📈 Analysis Insights:**
-            
-            - **Overall Sentiment:** {overall}
-            - **Community Engagement:** {'High' if len(comments) > 50 else 'Medium' if len(comments) > 20 else 'Low'}
-            - **Confidence Level:** {'High' if avg_confidence > 0.7 else 'Medium' if avg_confidence > 0.5 else 'Low'}
-            - **Key Insight:** {insight}
-            - **Sentiment Distribution:** {positive_pct:.1f}% Positive, {negative_pct:.1f}% Negative
-            """)
-    
-    with export_col3:
-        if st.button("🔄 Analyze New Post", use_container_width=True):
-            st.session_state.pop('real_data', None)
-            st.rerun()
+            # Fallback simple logic
+            polarity = 0
+            subjectivity = 0.5
 
-# --- 4. MAIN APPLICATION ---
+        # Categorize Sentiment
+        if polarity > 0.1: sentiment = 'Positive'
+        elif polarity < -0.1: sentiment = 'Negative'
+        else: sentiment = 'Neutral'
+
+        # 2. Emotion Detection
+        detected_emotions = []
+        words = set(re.findall(r'\w+', text.lower()))
+        for emotion, keywords in self.emotions.items():
+            if not words.isdisjoint(keywords):
+                detected_emotions.append(emotion)
+        
+        if not detected_emotions: detected_emotions = ['Neutral']
+        primary_emotion = detected_emotions[0]
+
+        # 3. Stats
+        word_count = len(text.split())
+        
+        return {
+            'sentiment': sentiment,
+            'polarity': polarity,
+            'subjectivity': subjectivity,
+            'emotions': detected_emotions,
+            'primary_emotion': primary_emotion,
+            'word_count': word_count
+        }
+
+    def process_batch(self, comments):
+        processed = []
+        for c in comments:
+            nlp_res = self.analyze_text(c['body'])
+            c.update(nlp_res)
+            processed.append(c)
+        return processed
+
+# --- 3. VISUALIZATION ENGINE ---
+
+class VizEngine:
+    @staticmethod
+    def plot_radar_emotions(df):
+        """Vẽ biểu đồ mạng nhện cho cảm xúc"""
+        all_emotions = [e for sublist in df['emotions'] for e in sublist if e != 'Neutral']
+        if not all_emotions: return None
+        
+        counts = Counter(all_emotions)
+        categories = list(counts.keys())
+        values = list(counts.values())
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatterpolar(
+            r=values,
+            theta=categories,
+            fill='toself',
+            name='Emotions',
+            line_color='#ff4500'
+        ))
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True)),
+            showlegend=False,
+            height=350,
+            margin=dict(t=20, b=20, l=20, r=20),
+            title="Emotional Footprint"
+        )
+        return fig
+
+    @staticmethod
+    def plot_sunburst(df):
+        """Vẽ biểu đồ Sunburst: Sentiment -> Emotion"""
+        # Prepare data
+        df_explode = df.explode('emotions')
+        # Filter out purely neutral paths to make chart interesting
+        df_explode = df_explode[df_explode['sentiment'] != 'Neutral']
+        
+        if df_explode.empty: return None
+        
+        fig = px.sunburst(
+            df_explode, 
+            path=['sentiment', 'emotions'],
+            color='sentiment',
+            color_discrete_map={'Positive': '#00CC96', 'Negative': '#EF553B', 'Neutral': '#FECB52'},
+            height=400,
+            title="Sentiment to Emotion Hierarchy"
+        )
+        return fig
+
+    @staticmethod
+    def plot_sentiment_timeline(df):
+        """Biểu đồ đường thời gian với đường trung bình động"""
+        df = df.sort_values('timestamp')
+        df['MA'] = df['polarity'].rolling(window=max(1, int(len(df)/10))).mean()
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['polarity'], mode='markers', name='Comment', marker=dict(opacity=0.3, color='#888')))
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['MA'], mode='lines', name='Trend', line=dict(color='#ff4500', width=3)))
+        
+        fig.update_layout(
+            title="Sentiment Trend Over Time",
+            yaxis_title="Polarity (-1 to 1)",
+            height=350,
+            showlegend=False
+        )
+        return fig
+
+    @staticmethod
+    def plot_length_boxplot(df):
+        """Boxplot so sánh độ dài comment"""
+        fig = px.box(
+            df, x='sentiment', y='word_count', 
+            color='sentiment',
+            color_discrete_map={'Positive': '#00CC96', 'Negative': '#EF553B', 'Neutral': '#FECB52'},
+            points="outliers",
+            title="Comment Length Distribution by Sentiment"
+        )
+        fig.update_layout(height=350)
+        return fig
+
+# --- MAIN APP ---
 
 def main():
-    st.title("🔥 Reddit Sentiment Analyzer Pro")
-    st.markdown("""
-    **Advanced sentiment analysis using LIVE Reddit data** 
-    
-    ✨ **Features:**
-    - 🚀 Real-time data from Reddit (No API keys needed)
-    - 🧠 Advanced sentiment analysis with confidence scoring  
-    - 📊 Interactive visualizations and filtering
-    - 💾 Export results to CSV
-    - 🎯 Detailed comment-level analysis
-    """)
-    
-    # Initialize session state
-    if 'analysis_count' not in st.session_state:
-        st.session_state.analysis_count = 0
-    if 'total_comments' not in st.session_state:
-        st.session_state.total_comments = 0
-    
-    # Sidebar
+    # --- SIDEBAR CONFIG ---
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.title("⚙️ Control Panel")
+        st.markdown("### Analysis Settings")
         
-        # Model info
-        model_info = sentiment_analyzer.get_model_info()
-        st.success("✅ Advanced Analyzer Active")
-        st.info(f"**Model:** {model_info['model_name']}")
-        st.info(f"**Type:** {model_info['model_type']}")
+        min_words = st.slider("Min Word Count Filter", 0, 50, 0)
+        remove_stops = st.checkbox("Exclude Stopwords", value=True)
         
-        st.header("📈 Statistics")
-        st.metric("Total Analyses", st.session_state.analysis_count)
-        st.metric("Comments Processed", st.session_state.total_comments)
-        
-        st.header("ℹ️ About")
-        st.markdown("""
-        **Powered by:**
-        - 🌐 Reddit JSON API
-        - 🧠 Enhanced Sentiment Analysis
-        - 📊 Streamlit Dashboard
-        - 🎯 Real-time Data Processing
-        """)
-    
-    # Main input form
-    with st.form("analysis_form"):
-        st.subheader("🔍 Enter Reddit Post URL")
-        
-        col1, col2 = st.columns([4, 1])
-        
-        with col1:
-            url = st.text_input(
-                "Reddit Post URL:",
-                placeholder="https://www.reddit.com/r/python/comments/...",
-                help="Paste any Reddit post URL to analyze comments",
-                label_visibility="collapsed"
-            )
-        
-        with col2:
-            st.write("")
-            st.write("")
-            submitted = st.form_submit_button(
-                "🚀 Analyze Sentiment", 
-                type="primary", 
-                use_container_width=True
-            )
-    
-    # Quick analysis presets
-    with st.expander("⚡ Quick Analysis Presets", expanded=True):
-        preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
-        
-        with preset_col1:
-            if st.button("🐍 Python", use_container_width=True):
-                st.session_state.preset_url = "https://www.reddit.com/r/Python/comments/18x4h4v/what_python_skills_are_most_in_demand_right_now/"
+        st.divider()
+        st.markdown("### History")
+        if 'history' not in st.session_state: st.session_state.history = []
+        for h in st.session_state.history[-5:][::-1]:
+            if st.button(f"r/{h['sub']}: {h['title'][:15]}...", key=h['id']):
+                st.session_state.url = h['url']
                 st.rerun()
-        
-        with preset_col2:
-            if st.button("🎮 Gaming", use_container_width=True):
-                st.session_state.preset_url = "https://www.reddit.com/r/gaming/comments/18y2a3b/whats_the_best_game_youve_played_this_year/"
-                st.rerun()
-        
-        with preset_col3:
-            if st.button("🤖 Technology", use_container_width=True):
-                st.session_state.preset_url = "https://www.reddit.com/r/technology/comments/18z1b2c/ai_advances_that_will_change_everything_in_2024/"
-                st.rerun()
-        
-        with preset_col4:
-            if st.button("💰 Crypto", use_container_width=True):
-                st.session_state.preset_url = "https://www.reddit.com/r/CryptoCurrency/comments/1901c4d/bitcoin_etf_approval_what_it_means_for_crypto/"
-                st.rerun()
+
+    # --- INPUT SECTION ---
+    st.markdown("""
+    <div class="main-header">
+        <h1>🧬 Reddit Analytics Ultimate</h1>
+        <p>Advanced NLP • Emotional Intelligence • Temporal Trends</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Handle preset URL
-    if hasattr(st.session_state, 'preset_url'):
-        url = st.session_state.preset_url
-        del st.session_state.preset_url
-    
-    # Process analysis request
-    if submitted and url:
-        if "reddit.com" not in url:
-            st.error("❌ Please enter a valid Reddit URL.")
-        else:
-            with st.spinner("🌐 Connecting to Reddit & downloading real data..."):
-                result = reddit_loader.fetch_data(url)
+    col_in, col_btn = st.columns([5, 1])
+    with col_in:
+        default_url = st.session_state.get('url', '')
+        url = st.text_input("Reddit Thread URL", value=default_url, placeholder="https://reddit.com/r/...")
+    with col_btn:
+        st.write("")
+        st.write("")
+        analyze_btn = st.button("🚀 IGNITE", type="primary", use_container_width=True)
+
+    # --- PROCESS ---
+    if analyze_btn and url:
+        st.session_state.url = url
+        loader = RedditLoader()
+        nlp = NLPEngine()
+        
+        with st.status("🔍 Processing Data Pipeline...", expanded=True) as status:
+            st.write("📡 Connecting to Reddit JSON Node...")
+            raw_data = loader.fetch(url)
+            
+            if not raw_data['success']:
+                status.update(label="❌ Failed", state="error")
+                st.error(raw_data['error'])
+                return
+            
+            st.write(f"📥 Downloaded {len(raw_data['comments'])} comments. Ingesting to NLP Engine...")
+            processed_comments = nlp.process_batch(raw_data['comments'])
+            
+            # Create DataFrame
+            df = pd.DataFrame(processed_comments)
+            # Filter
+            df = df[df['word_count'] >= min_words]
+            
+            # Save History
+            hist_entry = {'id': str(time.time()), 'url': url, 'title': raw_data['meta']['title'], 'sub': raw_data['meta']['subreddit']}
+            if hist_entry['title'] not in [x['title'] for x in st.session_state.history]:
+                st.session_state.history.append(hist_entry)
+            
+            status.update(label="✅ Analysis Complete", state="complete", expanded=False)
+
+        # --- DASHBOARD LAYOUT ---
+        meta = raw_data['meta']
+        
+        # 1. EXECUTIVE SUMMARY (KPIs)
+        st.markdown("### 🏆 Executive Summary")
+        k1, k2, k3, k4 = st.columns(4)
+        
+        with k1:
+            st.metric("Total Engagement", f"{meta['score']:,}", delta=f"{meta['upvote_ratio']*100:.0f}% Ratio")
+        with k2:
+            st.metric("Comments Analyzed", len(df), delta=f"{len(df)/meta['comments_count']*100:.1f}% of Total")
+        with k3:
+            avg_pol = df['polarity'].mean()
+            st.metric("Avg Polarity", f"{avg_pol:.2f}", delta="Positive" if avg_pol > 0 else "Negative")
+        with k4:
+            # Subjectivity KPI
+            avg_sub = df['subjectivity'].mean()
+            label = "Opinionated" if avg_sub > 0.5 else "Objective"
+            st.metric("Tone", label, delta=f"{avg_sub:.2f}")
+
+        # 2. TABS
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📊 Macro View", "🧠 Emotional AI", "⏳ Temporal", "☁️ Linguistics", "🔬 Micro Explorer"
+        ])
+        
+        # TAB 1: MACRO VIEW (General Sentiment)
+        with tab1:
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                # Donut Chart
+                sentiment_counts = df['sentiment'].value_counts()
+                fig_donut = px.pie(
+                    values=sentiment_counts.values, names=sentiment_counts.index, 
+                    hole=0.6, color=sentiment_counts.index,
+                    color_discrete_map={'Positive': '#00cc96', 'Negative': '#ef553b', 'Neutral': '#fecb52'},
+                    title="Overall Sentiment Distribution"
+                )
+                st.plotly_chart(fig_donut, use_container_width=True)
+            
+            with c2:
+                # Sunburst
+                st.plotly_chart(VizEngine.plot_sunburst(df), use_container_width=True)
+        
+        # TAB 2: EMOTIONAL AI (Deep Dive)
+        with tab2:
+            st.info("💡 **AI Analysis:** Detecting nuances like Anger, Joy, Trust beyond simple Positive/Negative.")
+            c1, c2 = st.columns(2)
+            with c1:
+                # Radar Chart
+                radar = VizEngine.plot_radar_emotions(df)
+                if radar: st.plotly_chart(radar, use_container_width=True)
+                else: st.warning("Not enough emotional data.")
+            with c2:
+                # Box Plot (Length vs Sentiment)
+                st.plotly_chart(VizEngine.plot_length_boxplot(df), use_container_width=True)
+
+        # TAB 3: TEMPORAL (Time Series)
+        with tab3:
+            st.plotly_chart(VizEngine.plot_sentiment_timeline(df), use_container_width=True)
+            
+            # Heatmap of Activity
+            df['hour'] = df['timestamp'].dt.hour
+            hourly_counts = df['hour'].value_counts().sort_index()
+            fig_bar = px.bar(x=hourly_counts.index, y=hourly_counts.values, labels={'x':'Hour of Day', 'y':'Volume'}, title="Comment Volume by Hour")
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        # TAB 4: LINGUISTICS (Word Cloud & Entities)
+        with tab4:
+            if WORDCLOUD_AVAILABLE:
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    st.markdown("##### Word Cloud (Positive vs Negative)")
+                    # Generate Positive Word Cloud
+                    pos_text = " ".join(df[df['sentiment']=='Positive']['body'])
+                    if pos_text:
+                        wc = WordCloud(width=800, height=400, background_color='white', colormap='Greens').generate(pos_text)
+                        st.image(wc.to_array(), caption="Positive Vocabulary")
+                with c2:
+                    st.markdown("##### Top Negative Keywords")
+                    neg_text = " ".join(df[df['sentiment']=='Negative']['body'])
+                    if neg_text:
+                        words = [w for w in re.findall(r'\w+', neg_text.lower()) if len(w)>3]
+                        common = Counter(words).most_common(10)
+                        st.dataframe(pd.DataFrame(common, columns=['Word', 'Count']), hide_index=True)
+            else:
+                st.warning("Install `wordcloud` to see this tab.")
+
+        # TAB 5: MICRO EXPLORER (Data Grid)
+        with tab5:
+            # Filters
+            f1, f2, f3 = st.columns(3)
+            with f1: f_sent = st.multiselect("Filter Sentiment", ['Positive', 'Negative', 'Neutral'], default=['Positive', 'Negative'])
+            with f2: f_emo = st.multiselect("Filter Emotion", list(nlp.emotions.keys()))
+            with f3: sort = st.selectbox("Sort By", ["Score (High-Low)", "Polarity (Most Neg)", "Polarity (Most Pos)", "Newest"])
+            
+            # Apply Filters
+            filtered_df = df[df['sentiment'].isin(f_sent)]
+            if f_emo:
+                # Filter if emotions list contains selected emotion
+                filtered_df = filtered_df[filtered_df['emotions'].apply(lambda x: any(e in f_emo for e in x))]
+            
+            # Sort
+            if sort == "Score (High-Low)": filtered_df = filtered_df.sort_values('score', ascending=False)
+            elif sort == "Polarity (Most Neg)": filtered_df = filtered_df.sort_values('polarity', ascending=True)
+            elif sort == "Polarity (Most Pos)": filtered_df = filtered_df.sort_values('polarity', ascending=False)
+            elif sort == "Newest": filtered_df = filtered_df.sort_values('timestamp', ascending=False)
+            
+            st.markdown(f"**Showing {len(filtered_df)} comments**")
+            
+            for _, row in filtered_df.head(50).iterrows():
+                # Dynamic Badge Color
+                badge_color = "#00cc96" if row['sentiment']=='Positive' else "#ef553b" if row['sentiment']=='Negative' else "#fecb52"
                 
-                if result['success']:
-                    st.session_state.real_data = result
-                    st.session_state.analysis_count += 1
-                    st.session_state.total_comments += len(result['comments'])
-                    st.success(f"✅ Successfully loaded {len(result['comments'])} comments!")
-                else:
-                    st.error(f"❌ Error: {result['error']}")
-    
-    # Display results if available
-    if 'real_data' in st.session_state:
-        display_enhanced_results(st.session_state.real_data)
-    
-    # Footer with technical info
-    st.divider()
-    with st.expander("🔧 Technical Implementation Details"):
-        st.markdown("""
-        **🛠️ How This Works:**
-        
-        1. **JSON Endpoint Access**: Appends `.json` to Reddit URLs to access public API
-        2. **Enhanced Parsing**: Intelligently extracts post metadata and comments
-        3. **Advanced Sentiment Analysis**: 
-           - Weighted keyword scoring
-           - Negation handling  
-           - Confidence calculation
-        4. **Real-time Processing**: Live analysis without API keys
-        5. **Interactive Dashboard**: Filtering, visualization, and export
-        
-        **📊 Data Flow:**
-        ```
-        Reddit URL → JSON Endpoint → Data Parsing → Sentiment Analysis → Visualization
-        ```
-        
-        **🛡️ Privacy & Compliance:**
-        - Uses only public Reddit data
-        - No authentication required
-        - Respects rate limits
-        - Local processing only
-        """)
+                st.markdown(f"""
+                <div style="background:white; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {badge_color}; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                    <div style="display:flex; justify-content:space-between;">
+                        <b>u/{row['author']}</b>
+                        <span style="background:{badge_color}; color:white; padding:2px 8px; border-radius:10px; font-size:0.8em;">{row['sentiment']} ({row['polarity']:.2f})</span>
+                    </div>
+                    <div style="margin:5px 0; font-size:0.9em; color:#666;">
+                        Emotion: <em>{', '.join(row['emotions'])}</em> • Subjectivity: {row['subjectivity']:.2f}
+                    </div>
+                    <div style="color:#333; line-height:1.5;">{row['body']}</div>
+                    <div style="margin-top:5px; font-size:0.8em; color:#888;">
+                        ⬆️ {row['score']} • 📅 {row['timestamp']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with st.expander("📥 Export Raw Data"):
+                st.dataframe(filtered_df)
 
 if __name__ == "__main__":
     main()
