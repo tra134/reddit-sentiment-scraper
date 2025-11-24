@@ -1,80 +1,113 @@
+# app/core/auth.py
+from datetime import datetime, timedelta
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+from typing import Optional
+import streamlit as st
+import os
 import hashlib
 import secrets
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-import logging
+import hmac
 
-logger = logging.getLogger(__name__)
+# Password hashing với fallback mạnh hơn
+try:
+    # Thử sử dụng scheme khác nếu bcrypt lỗi
+    pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
+    pwd_context.hash("test")  # Test ngay lập tức
+    BC_AVAILABLE = True
+    print("✅ Password hashing backend available")
+except Exception as e:
+    print(f"⚠️ Advanced hashing not available: {e}, using secure fallback")
+    BC_AVAILABLE = False
 
-class SimpleAuth:
-    """Simple authentication system for the application"""
-    
-    def __init__(self):
-        self.sessions = {}
-        self.api_keys = {}
-    
-    def generate_api_key(self, name: str) -> str:
-        """Generate a new API key"""
-        api_key = secrets.token_urlsafe(32)
-        self.api_keys[api_key] = {
-            'name': name,
-            'created_at': datetime.now(),
-            'last_used': None,
-            'usage_count': 0
-        }
-        logger.info(f"🔑 Generated API key for: {name}")
-        return api_key
-    
-    def validate_api_key(self, api_key: str) -> bool:
-        """Validate API key"""
-        if api_key in self.api_keys:
-            self.api_keys[api_key]['last_used'] = datetime.now()
-            self.api_keys[api_key]['usage_count'] += 1
-            return True
-        return False
-    
-    def create_session(self, user_data: Dict[str, Any]) -> str:
-        """Create a new user session"""
-        session_id = secrets.token_urlsafe(16)
-        self.sessions[session_id] = {
-            'user_data': user_data,
-            'created_at': datetime.now(),
-            'last_activity': datetime.now()
-        }
-        return session_id
-    
-    def validate_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Validate session and return user data"""
-        if session_id in self.sessions:
-            session = self.sessions[session_id]
-            # Check if session is expired (24 hours)
-            if datetime.now() - session['created_at'] > timedelta(hours=24):
-                del self.sessions[session_id]
-                return None
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash"""
+    if BC_AVAILABLE:
+        try:
+            return pwd_context.verify(plain_password, hashed_password)
+        except Exception:
+            # Fallback nếu có lỗi
+            return fallback_verify_password(plain_password, hashed_password)
+    else:
+        return fallback_verify_password(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """Generate password hash"""
+    if BC_AVAILABLE:
+        try:
+            # Giới hạn password length cho bcrypt
+            if len(password) > 72:
+                password = password[:72]
+            return pwd_context.hash(password)
+        except Exception:
+            # Fallback nếu có lỗi
+            return fallback_get_password_hash(password)
+    else:
+        return fallback_get_password_hash(password)
+
+def fallback_verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Secure fallback password verification"""
+    try:
+        # Format: algorithm$iterations$salt$hash
+        parts = hashed_password.split('$')
+        if len(parts) != 4:
+            return False
             
-            session['last_activity'] = datetime.now()
-            return session['user_data']
-        return None
-    
-    def revoke_session(self, session_id: str) -> bool:
-        """Revoke a session"""
-        if session_id in self.sessions:
-            del self.sessions[session_id]
-            return True
+        algorithm, iterations, salt, stored_hash = parts
+        iterations = int(iterations)
+        
+        # Hash password với salt và iterations
+        password_hash = hashlib.pbkdf2_hmac(
+            'sha256',
+            plain_password.encode('utf-8'),
+            salt.encode('utf-8'),
+            iterations
+        ).hex()
+        
+        return hmac.compare_digest(password_hash, stored_hash)
+    except:
         return False
-    
-    def cleanup_expired_sessions(self):
-        """Clean up expired sessions"""
-        expired_keys = []
-        for session_id, session in self.sessions.items():
-            if datetime.now() - session['created_at'] > timedelta(hours=24):
-                expired_keys.append(session_id)
-        
-        for key in expired_keys:
-            del self.sessions[key]
-        
-        if expired_keys:
-            logger.info(f"🧹 Cleaned up {len(expired_keys)} expired sessions")
 
-# Global auth instance
-auth_manager = SimpleAuth()
+def fallback_get_password_hash(password: str) -> str:
+    """Secure fallback password hashing"""
+    # Tạo salt ngẫu nhiên
+    salt = secrets.token_hex(16)
+    iterations = 100000  # Số lần hash
+    
+    # Hash password với PBKDF2
+    password_hash = hashlib.pbkdf2_hmac(
+        'sha256',
+        password.encode('utf-8'),
+        salt.encode('utf-8'),
+        iterations
+    ).hex()
+    
+    # Format: algorithm$iterations$salt$hash
+    return f"pbkdf2_sha256${iterations}${salt}${password_hash}"
+
+def authenticate_user(db: Session, username: str, password: str):
+    """Authenticate user credentials"""
+    # Import inside function to avoid circular import
+    from app.core.user_database import User
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return None
+    if not verify_password(password, user.hashed_password):
+        return None
+    return user
+
+def get_current_user():
+    """Get current user from Streamlit session state"""
+    return st.session_state.get("user")
+
+def is_authenticated():
+    """Check if user is authenticated"""
+    return st.session_state.get("authenticated", False)
+
+def logout():
+    """Logout user"""
+    st.session_state.authenticated = False
+    st.session_state.user = None
+    if 'user_groups' in st.session_state:
+        del st.session_state.user_groups
+    st.rerun()
