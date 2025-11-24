@@ -1,0 +1,53 @@
+{
+  "model_registry": {
+    "sentiment_models": {
+      "roberta": {
+        "name": "cardiffnlp/twitter-roberta-base-sentiment-latest",
+        "type": "transformer",
+        "task": "sentiment-analysis",
+        "languages": ["english"],
+        "max_length": 512,
+        "version": "latest",
+        "performance": {
+          "accuracy": 0.92,
+          "f1_score": 0.91,
+          "last_updated": "2024-01-15"
+        }
+      },
+      "vader": {
+        "name": "vader",
+        "type": "rule_based",
+        "task": "sentiment-analysis",
+        "languages": ["english"],
+        "version": "3.3.2",
+        "performance": {
+          "accuracy": 0.75,
+          "f1_score": 0.72,
+          "last_updated": "2024-01-15"
+        }
+      }
+    },
+    "emotion_models": {
+      "roberta_emotion": {
+        "name": "j-hartmann/emotion-english-distilroberta-base",
+        "type": "transformer",
+        "task": "emotion-classification",
+        "languages": ["english"],
+        "max_length": 512,
+        "version": "latest",
+        "emotions": ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"],
+        "performance": {
+          "accuracy": 0.88,
+          "f1_score": 0.86,
+          "last_updated": "2024-01-15"
+        }
+      }
+    },
+    "model_cache": {
+      "enabled": true,
+      "cache_dir": "data/models/cache",
+      "max_cache_size_mb": 1000,
+      "cleanup_interval_hours": 24
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "scraping": {
+    "headless": true,
+    "timeout": 30,
+    "max_retries": 3,
+    "retry_delay": 2,
+    "request_delay": 1.5,
+    "max_comments_per_post": 1000,
+    "scroll_pause_time": 2,
+    "wait_for_element_timeout": 10,
+    "enable_javascript": true,
+    "bypass_cloudflare": true,
+    "use_stealth_mode": true
+  },
+  "browser": {
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "window_size": "1920,1080",
+    "disable_images": true,
+    "disable_javascript": false,
+    "block_popups": true,
+    "ignore_certificate_errors": false,
+    "stealth_mode": true
+  },
+  "proxy": {
+    "enabled": true,
+    "max_retries": 3,
+    "timeout": 10,
+    "rotate_on_failure": true,
+    "proxy_file": "proxies/proxy_list.json",
+    "proxy_types": ["http", "https", "socks5"]
+  },
+  "analysis": {
+    "batch_size": 50,
+    "max_text_length": 512,
+    "confidence_threshold": 0.6,
+    "enable_real_time": true,
+    "languages": ["english"],
+    "min_comment_length": 3,
+    "max_comment_length": 1000
+  }
+}

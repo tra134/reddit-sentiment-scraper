@@ -1,0 +1,26 @@
+{
+  "proxies": [
+    {
+      "address": "192.168.1.1:8080",
+      "type": "http",
+      "added_at": "2024-01-15T10:30:00",
+      "success_count": 0,
+      "fail_count": 0,
+      "last_used": null,
+      "last_checked": null,
+      "response_time": null
+    },
+    {
+      "address": "192.168.1.2:3128",
+      "type": "http",
+      "added_at": "2024-01-15T10:30:00",
+      "success_count": 0,
+      "fail_count": 0,
+      "last_used": null,
+      "last_checked": null,
+      "response_time": null
+    }
+  ],
+  "working_proxies": [],
+  "last_update": "2024-01-15T10:30:00"
+}
