@@ -12,6 +12,9 @@ from collections import Counter
 import time
 import sys
 import os
+import textwrap
+import streamlit.components.v1 as components
+import html
 
 # Thêm thư mục gốc vào path để import các module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -897,22 +900,22 @@ def show_trending_posts():
     """Display trending posts from user's followed groups"""
     if not st.session_state.authenticated:
         return
-    
+
     try:
         db = user_db_manager.get_session()
         user_service = UserService(db)
         current_user = st.session_state.user
-        
+
         # Get user's groups
         user_groups = user_service.get_user_groups(current_user["id"])
         if not user_groups:
             st.info("🌟 Add some groups in the sidebar to see trending posts!")
             return
-        
+
         subreddits = [group.subreddit for group in user_groups]
-        
+
         st.markdown("### 🔥 Trending from Your Groups")
-        
+
         # Time filter
         col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
@@ -926,61 +929,89 @@ def show_trending_posts():
             )
         with col3:
             limit = st.slider("Posts per group", 3, 10, 5, key="trending_limit")
-        
+
         # Fetch trending posts
         with st.spinner("🔄 Fetching trending posts..."):
             trend_manager = TrendingPostsManager()
             all_posts = trend_manager.fetch_multiple_subreddits(subreddits, limit_per_sub=limit)
-        
+
         if not all_posts:
             st.warning("❌ Could not fetch trending posts. Please check your internet connection.")
             return
-        
+
         # Display posts by subreddit
         for subreddit in subreddits:
-            sub_posts = [p for p in all_posts if p['subreddit'] == subreddit]
-            if sub_posts:
-                with st.expander(f"📁 r/{subreddit} - {len(sub_posts)} trending posts", expanded=True):
-                    for post in sub_posts:
+            sub_posts = [p for p in all_posts if p.get('subreddit') == subreddit]
+            if not sub_posts:
+                continue
+
+            with st.expander(f"📁 r/{subreddit} - {len(sub_posts)} trending posts", expanded=True):
+                for post in sub_posts:
+                    # Validate required keys
+                    required_keys = ['title', 'score', 'author', 'comments_count', 'created_utc', 'url']
+                    if not all(k in post for k in required_keys):
+                        st.warning(f"⚠️ Post missing data: {post}")
+                        continue
+
+                    # Compute time
+                    try:
                         post_time = datetime.fromtimestamp(post['created_utc'])
                         time_ago = datetime.now() - post_time
-                        
-                        st.markdown(f"""
-                        <div class="post-card">
-                            <div style="display: flex; justify-content: between; align-items: start; margin-bottom: 10px;">
-                                <div style="flex: 1;">
-                                    <h4 style="margin: 0; color: #E2E8F0;">{post['title']}</h4>
-                                </div>
-                                <div style="text-align: right; min-width: 100px;">
-                                    <span style="background: #667eea; color: white; padding: 4px 8px; border-radius: 8px; font-size: 0.8em;">
-                                        ⬆️ {post['score']}
-                                    </span>
-                                </div>
-                            </div>
-                            
-                            <div style="color: #CBD5E0; font-size: 0.9em; margin-bottom: 10px;">
-                                <span>👤 {post['author']}</span> • 
-                                <span>💬 {post['comments_count']} comments</span> • 
-                                <span>🕒 {time_ago.days}d {time_ago.seconds//3600}h ago</span>
-                            </div>
-                            
-                            <div style="display: flex; gap: 10px;">
-                                <a href="{post['url']}" target="_blank" style="text-decoration: none;">
-                                    <button style="background: #667eea; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em;">
-                                        📖 Read Post
-                                    </button>
-                                </a>
-                                <a href="{post['url']}" target="_blank" style="text-decoration: none;">
-                                    <button style="background: #38A169; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em;">
-                                        🧠 Analyze
-                                    </button>
-                                </a>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-        
+                        days_ago = time_ago.days
+                        hours_ago = time_ago.seconds // 3600
+                    except Exception:
+                        days_ago, hours_ago = 0, 0
+
+                    # Handle image posts separately
+                    url = str(post['url'])
+                    if url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                        st.image(url, caption=post.get('title', ''))
+                        continue
+
+                    # Escape text fields
+                    safe_title = html.escape(str(post.get('title', '')))
+                    safe_author = html.escape(str(post.get('author', '')))
+                    safe_comments = int(post.get('comments_count', 0))
+                    safe_score = int(post.get('score', 0))
+
+                    # Build HTML
+                    html_block = f"""<div style="border: 1px solid #2D3748; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+<div style="display: flex; justify-content: space-between; align-items: start;">
+  <div style="flex: 1;">
+    <h4 style="margin: 0; color: #E2E8F0;">{safe_title}</h4>
+  </div>
+  <div style="text-align: right; min-width: 100px;">
+    <span style="background: #667eea; color: white; padding: 4px 8px; border-radius: 8px; font-size: 0.8em;">
+      ⬆️ {safe_score}
+    </span>
+  </div>
+</div>
+
+<div style="color: #CBD5E0; font-size: 0.9em; margin: 10px 0;">
+  👤 {safe_author} • 💬 {safe_comments} comments • 🕒 {days_ago}d {hours_ago}h ago
+</div>
+
+<div style="display: flex; gap: 10px;">
+  <a href="{url}" target="_blank" style="text-decoration: none;">
+    <div style="background: #667eea; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em; display: inline-block;">
+      📖 Read Post
+    </div>
+  </a>
+
+  <a href="{url}" target="_blank" style="text-decoration: none;">
+    <div style="background: #38A169; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em; display: inline-block;">
+      🧠 Analyze
+    </div>
+  </a>
+</div>
+</div>"""
+
+                    # Render HTML safely
+                    components.html(html_block, height=220, scrolling=False)
+
     except Exception as e:
-        st.error(f"Error loading trending posts: {e}")
+        st.error(f"Error: {str(e)}")
+
 
 def show_trend_analysis():
     """Show trend analysis across all followed groups"""
