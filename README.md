@@ -1,160 +1,128 @@
-Reddit Sentiment Scraper - Enterprise Social Listening Tool
+Reddit Sentiment Scraper – Enterprise Social Listening Tool
 
-Reddit Analytics Pro is an in-depth social listening platform designed for Reddit. This project enables the collection and analysis of user sentiment, trends, and behaviors without requiring a Reddit API Key, helping overcome request limits and API cost barriers.
+Reddit Sentiment Scraper is an in-depth social listening platform designed for Reddit. This project allows for the collection and analysis of user sentiment, trends, and behavior without requiring a Reddit API Key, helping bypass rate limits and API costs.
 
 Key Features
 1. Enterprise User System
 
-Secure registration and login with password hashing (Bcrypt)
+-Authentication: Secure registration & login with Bcrypt password hashing.
 
-Manage a personalized list of favorite subreddits
+-Personalization: Manage a personal list of favorite Subreddits.
 
-Save analysis history for later review
+-History Tracking: Automatically saves user analysis history.
 
 2. Smart Data Collection Technology
 
-Retrieve Reddit data using a No-API JSON simulation technique (no Developer account required)
+-No-API Mode: Uses JSON simulation techniques to retrieve real Reddit data without API keys.
 
-Automatically discover and recommend trending posts from tracked groups
+-Auto Discovery: Automatically scans and suggests hot posts from tracked groups.
 
 3. Advanced AI Analysis (NLP)
 
-Sentiment classification: Positive, Negative, Neutral
+.Sentiment Analysis: Positive, Negative, Neutral.
 
-Emotion detection: Joy, Anger, Sadness, Surprise, etc.
+.Emotion Detection: Joy, Anger, Sadness, Surprise, etc.
 
-Intent classification: Questions, Complaints, Appreciation, News
+.Intent Classification: Questions, Complaints, Appreciation, News.
 
-Topic modeling: Extract bigrams and generate word clouds
+.Topic Modeling: Bigrams, WordCloud, theme extraction.
 
 4. Interactive Data Visualization
 
-Real-time interactive charts using Plotly
+Charts: Pie charts, bar charts, line charts (Plotly).
 
-Radar charts for emotion distribution
+Radar Chart: Emotional analysis.
 
-Time-series analysis to track discussion trends
+Time-series Analysis: Discussion evolution.
 
-Export analysis results to CSV files
+Data Export: Export results to CSV.
 
 Project Structure
 
-The project follows an MVC / Service Layer architecture for scalability and maintainability.
+The project follows the MVC / Service Layer architecture.
 
+```bash
 reddit-sentiment-scraper/
 ├── app/
-│   ├── core/               # Database and authentication configuration
+│   ├── core/               # Database & Auth configuration
 │   ├── models/             # SQLAlchemy ORM models
-│   ├── services/           # Business logic (User Service, Trend Service)
-│   ├── scrapers/           # Reddit data collection engine
+│   ├── services/           # Business logic layer
+│   ├── scrapers/           # Reddit data collection
 │   └── main.py             # Streamlit entry point
-├── data/                   # SQLite database storage (.db)
-├── requirements.txt        # Required libraries
+├── data/                   # SQLite database (.db)
+├── requirements.txt        # Dependencies
 └── README.md               # Documentation
+```
 
 Installation Guide
-1. Clone the repository
+1. Clone Repository
+```Bash
 git clone https://github.com/tra134/reddit-sentiment-scraper.git
 cd reddit-sentiment-scraper
+```
 
-2. Create a virtual environment (recommended)
+2. Create Virtual Environment (Recommended)
 
-Windows:
+Windows
+```Bash
 
 python -m venv venv
-venv\Scripts\activate
+.\venv\Scripts\activate
+```
 
-
-macOS / Linux:
-
+macOS/Linux
+Bash
+```
 python3 -m venv venv
 source venv/bin/activate
+```
+3. Install Dependencies
+```Bash
+pip install -r requirements*.txt
+```
+4. Run Application
 
-3. Install dependencies
-pip install -r requirements.txt
-
-4. Run the application
-
-(The main Streamlit entry point is inside the app folder.)
-
+(Entry file is inside the app directory)
+```Bash
 streamlit run app/main.py
+```
 
-
-The browser will automatically open at:
-
+After running, open:
 http://localhost:8501
 
 User Guide
-Register an account
+Register Account
 
-On the main screen, select the Register tab
+Open the Register tab.
+Enter username + password.
+Data is stored locally at data/database/user_data.db.
+Manage Groups (My Feed)
+Log in → open the sidebar.
+Enter a Subreddit name and click Add.
+Click Refresh Feed to fetch hot posts.
 
-Enter a username and password
+Analyze Posts
+Option 1: Click the Analyze button on any post.
+Option 2: Paste any Reddit post link into Single Analysis tab and run.
 
-User data is stored locally in: data/database/user_data.db
 
-Manage Subreddit Groups (My Feed)
-
-After logging in, open the Sidebar
-
-Enter a subreddit name (example: technology, bitcoin, vietnam) and click Add
-
-Click Refresh Feed to load trending posts
-
-Analyze posts
-
-Method 1: Click the Analyze button directly on a post
-Method 2: Paste any Reddit post URL into the Single Analysis tab and click Run
-
-View reports
-
-The dashboard provides:
-
+View Reports
+Dashboard includes:
 Overview
-
 Emotions
-
 Trends
-
 Comment Details
 
+
 Tech Stack
-
 Frontend: Streamlit
-
 Backend: Python
-
-Database: SQLite with SQLAlchemy
-
-NLP: NLTK, VADER, TextBlob
-
+Database: SQLite + SQLAlchemy
+NLP: NLTK, TextBlob
 Visualization: Plotly, WordCloud
+Data Handling: Pandas, NumPy
 
-Data Processing: Pandas, NumPy
-
-Contributing
-
-Contributions are welcome.
-
-Fork this repository
-
-Create a feature branch:
-
-git checkout -b feature/AmazingFeature
-
-
-Commit your changes:
-
-git commit -m "Add AmazingFeature"
-
-
-Push your branch:
-
-git push origin feature/AmazingFeature
-
-
-Open a Pull Request
 
 License
-
-This project is licensed under the MIT License. See the LICENSE file for details.
+Distributed under the MIT License.
+See the LICENSE file for details.
