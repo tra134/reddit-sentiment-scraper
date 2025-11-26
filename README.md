@@ -6,10 +6,11 @@ Key Features
 1. Enterprise User System
 
 -Authentication: Secure registration & login with Bcrypt password hashing.
-
 -Personalization: Manage a personal list of favorite Subreddits.
-
 -History Tracking: Automatically saves user analysis history.
+-Summary: AI-generated summary of the post and comments.
+-Overview: General sentiment distribution and timeline
+-Comments: Detailed view of individual comments and their scores.
 
 2. Smart Data Collection Technology
 
