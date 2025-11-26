@@ -50,9 +50,44 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CUSTOM CSS FOR DARK THEME ---
+# --- CUSTOM CSS FOR DARK THEME & NAVIGATION ---
 st.markdown("""
 <style>
+    /* Styling for the Navigation Radio Button to look like Tabs */
+    div.row-widget.stRadio > div {
+        flex-direction: row;
+        align-items: stretch;
+    }
+    div.row-widget.stRadio > div[role="radiogroup"] > label {
+        background-color: #2D3748;
+        padding: 10px 20px;
+        border-radius: 10px;
+        margin-right: 10px;
+        border: 1px solid #4A5568;
+        cursor: pointer;
+        transition: all 0.3s;
+        text-align: center;
+        flex: 1;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    div.row-widget.stRadio > div[role="radiogroup"] > label:hover {
+        border-color: #667eea;
+        background-color: #4A5568;
+    }
+    div.row-widget.stRadio > div[role="radiogroup"] > label[data-checked="true"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-color: #667eea;
+        font-weight: bold;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    div.row-widget.stRadio > div[role="radiogroup"] > label > div:first-child {
+        display: none; /* Hide the radio circle */
+    }
+
+    /* Existing CSS */
     .main-header {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 40px;
@@ -148,31 +183,6 @@ st.markdown("""
         transform: translateX(5px);
         border-color: #667eea;
     }
-    .analysis-section {
-        background: #2D3748;
-        padding: 25px;
-        border-radius: 15px;
-        margin: 20px 0;
-        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
-        border: 1px solid #4A5568;
-        color: #E2E8F0;
-    }
-    .post-card {
-        background: #2D3748;
-        padding: 20px;
-        border-radius: 12px;
-        margin: 10px 0;
-        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-        border: 1px solid #4A5568;
-        color: #E2E8F0;
-        transition: all 0.3s ease;
-        border-left: 4px solid #667eea;
-    }
-    .post-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
-        border-color: #667eea;
-    }
     .trend-card {
         background: linear-gradient(135deg, #2D3748 0%, #4A5568 100%);
         padding: 15px;
@@ -196,12 +206,10 @@ st.markdown("""
         color: #E2E8F0 !important;
         border: 1px solid #4A5568 !important;
     }
-    
     .stSelectbox div[data-baseweb="select"] {
         background-color: #2D3748 !important;
         color: #E2E8F0 !important;
     }
-    
     .stButton button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
@@ -210,13 +218,23 @@ st.markdown("""
         padding: 10px 20px;
         font-weight: bold;
     }
-    
     .stButton button:hover {
         background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
         color: white;
     }
 </style>
 """, unsafe_allow_html=True)
+
+# --- HELPER FUNCTIONS FOR NAVIGATION ---
+def switch_tab(tab_name):
+    """Callback to switch tabs safely"""
+    st.session_state.active_tab = tab_name
+
+def analyze_post_callback(url):
+    """Callback to set up analysis and switch tab"""
+    st.session_state.trending_analysis_url = url
+    st.session_state.trending_analysis_triggered = True
+    st.session_state.active_tab = "🔗 Single Analysis"
 
 # --- TRENDING POSTS MANAGER ---
 
@@ -962,56 +980,38 @@ def show_trending_posts():
                     except Exception:
                         days_ago, hours_ago = 0, 0
 
-                    # Handle image posts separately
-                    url = str(post['url'])
-                    if url.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                        st.image(url, caption=post.get('title', ''))
-                        continue
+                    # Create columns for layout
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.markdown(f"**{post['title']}**")
+                        st.markdown(f"👤 {post['author']} • 💬 {post['comments_count']} comments • ⬆️ {post['score']} • 🕒 {days_ago}d {hours_ago}h ago")
+                    
+                    with col2:
+                        # Create buttons for actions
+                        btn_col1, btn_col2 = st.columns(2)
+                        
+                        with btn_col1:
+                            if st.button("📖 Read", key=f"read_{post['id']}", use_container_width=True):
+                                # Open in new tab using JavaScript
+                                js = f"window.open('{post['url']}', '_blank');"
+                                components.html(f"<script>{js}</script>", height=0)
+                        
+                        with btn_col2:
+                            # --- MODIFIED: Switch tab logic with CALLBACK ---
+                            st.button(
+                                "🧠 Analyze", 
+                                key=f"analyze_{post['id']}", 
+                                use_container_width=True, 
+                                type="primary",
+                                on_click=analyze_post_callback,
+                                args=(post['url'],)
+                            )
 
-                    # Escape text fields
-                    safe_title = html.escape(str(post.get('title', '')))
-                    safe_author = html.escape(str(post.get('author', '')))
-                    safe_comments = int(post.get('comments_count', 0))
-                    safe_score = int(post.get('score', 0))
-
-                    # Build HTML
-                    html_block = f"""<div style="border: 1px solid #2D3748; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
-<div style="display: flex; justify-content: space-between; align-items: start;">
-  <div style="flex: 1;">
-    <h4 style="margin: 0; color: #E2E8F0;">{safe_title}</h4>
-  </div>
-  <div style="text-align: right; min-width: 100px;">
-    <span style="background: #667eea; color: white; padding: 4px 8px; border-radius: 8px; font-size: 0.8em;">
-      ⬆️ {safe_score}
-    </span>
-  </div>
-</div>
-
-<div style="color: #CBD5E0; font-size: 0.9em; margin: 10px 0;">
-  👤 {safe_author} • 💬 {safe_comments} comments • 🕒 {days_ago}d {hours_ago}h ago
-</div>
-
-<div style="display: flex; gap: 10px;">
-  <a href="{url}" target="_blank" style="text-decoration: none;">
-    <div style="background: #667eea; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em; display: inline-block;">
-      📖 Read Post
-    </div>
-  </a>
-
-  <a href="{url}" target="_blank" style="text-decoration: none;">
-    <div style="background: #38A169; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9em; display: inline-block;">
-      🧠 Analyze
-    </div>
-  </a>
-</div>
-</div>"""
-
-                    # Render HTML safely
-                    components.html(html_block, height=220, scrolling=False)
+                    st.markdown("---")
 
     except Exception as e:
         st.error(f"Error: {str(e)}")
-
 
 def show_trend_analysis():
     """Show trend analysis across all followed groups"""
@@ -1113,23 +1113,39 @@ def show_trend_analysis():
         for i, post in enumerate(top_posts, 1):
             emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i-1]
             
-            st.markdown(f"""
-            <div class="trend-card">
-                <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                    <span style="font-size: 1.2em; margin-right: 10px;">{emoji}</span>
-                    <strong style="color: #E2E8F0;">{post['title'][:80]}...</strong>
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.markdown(f"""
+                <div class="trend-card">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 1.2em; margin-right: 10px;">{emoji}</span>
+                        <strong style="color: #E2E8F0;">{post['title'][:80]}...</strong>
+                    </div>
+                    <div style="color: #CBD5E0; font-size: 0.9em;">
+                        <span>r/{post['subreddit']}</span> • 
+                        <span>👤 {post['author']}</span> • 
+                        <span>⭐ {post['score']} points</span> • 
+                        <span>💬 {post['comments_count']} comments</span>
+                    </div>
                 </div>
-                <div style="color: #CBD5E0; font-size: 0.9em;">
-                    <span>r/{post['subreddit']}</span> • 
-                    <span>👤 {post['author']}</span> • 
-                    <span>⭐ {post['score']} points</span> • 
-                    <span>💬 {post['comments_count']} comments</span>
-                </div>
-                <a href="{post['url']}" target="_blank" style="color: #667eea; text-decoration: none; font-size: 0.9em;">
-                    🔗 View Post
-                </a>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("📖", key=f"top_read_{post['id']}", use_container_width=True):
+                        js = f"window.open('{post['url']}', '_blank');"
+                        components.html(f"<script>{js}</script>", height=0)
+                with btn_col2:
+                    st.button(
+                        "🧠", 
+                        key=f"top_analyze_{post['id']}", 
+                        use_container_width=True, 
+                        type="primary",
+                        on_click=analyze_post_callback,
+                        args=(post['url'],)
+                    )
             
     except Exception as e:
         st.error(f"Error analyzing trends: {e}")
@@ -1203,31 +1219,165 @@ def show_welcome_page():
         st.markdown("""
         ### 🏆 Why Choose Us?
         
-        ⭐ **Accuracy**  
-        Advanced algorithms for precise sentiment analysis
+        ⭐ **Accuracy** Advanced algorithms for precise sentiment analysis
         
-        ⭐ **Speed**  
-        Real-time processing of large datasets
+        ⭐ **Speed** Real-time processing of large datasets
         
-        ⭐ **Depth**  
-        Multi-dimensional analysis beyond basic sentiment
+        ⭐ **Depth** Multi-dimensional analysis beyond basic sentiment
         
-        ⭐ **Usability**  
-        Intuitive interface for all skill levels
+        ⭐ **Usability** Intuitive interface for all skill levels
         """)
 
 # --- SINGLE ANALYSIS FUNCTIONALITY ---
 
+def perform_analysis(url):
+    """Perform analysis on a given URL and display results"""
+    loader = RedditLoader()
+    nlp = EnhancedNLPEngine()
+    viz = EnhancedVizEngine()
+    
+    with st.status("🔍 Analyzing...", expanded=True) as status:
+        # Fetch data
+        status.update(label="🔄 Fetching data from Reddit...")
+        raw_data = loader.fetch(url)
+        if not raw_data['success']:
+            status.update(label="❌ Failed", state="error")
+            st.error(f"Error: {raw_data['error']}")
+            return None
+        
+        # Process comments
+        status.update(label=f"🧠 Analyzing {len(raw_data['comments'])} comments...")
+        processed_comments = nlp.process_batch(raw_data['comments'])
+        df = pd.DataFrame(processed_comments)
+        df = df[df['word_count'] >= 3]  # Filter short comments
+        
+        # Save to session
+        st.session_state.current_analysis = {
+            'df': df, 
+            'meta': raw_data['meta'],
+            'processed_at': datetime.now()
+        }
+        
+        # Save to history
+        hist_entry = {
+            'id': str(time.time()), 
+            'url': url, 
+            'title': raw_data['meta']['title'][:50] + "...",
+            'sub': raw_data['meta']['subreddit'],
+            'comments': len(df),
+            'timestamp': datetime.now()
+        }
+        if not any(h['url'] == url for h in st.session_state.history):
+            st.session_state.history.append(hist_entry)
+        
+        status.update(label=f"✅ Analyzed {len(df)} comments", state="complete")
+
+    # Display Results
+    meta = raw_data['meta']
+    df = st.session_state.current_analysis['df']
+    
+    # KPIs
+    st.markdown("### 🏆 Executive Summary")
+    k1, k2, k3, k4 = st.columns(4)
+    
+    with k1:
+        st.metric("Total Engagement", f"{meta['score']:,}")
+    with k2:
+        st.metric("Comments Analyzed", f"{len(df):,}")
+    with k3:
+        avg_pol = df['polarity'].mean()
+        sentiment = "😊 Positive" if avg_pol > 0.1 else "😟 Negative" if avg_pol < -0.1 else "😐 Neutral"
+        st.metric("Avg Sentiment", f"{avg_pol:.3f}", delta=sentiment)
+    with k4:
+        st.metric("Avg Words", f"{df['word_count'].mean():.0f}")
+
+    # Analysis Tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Overview", "🧠 Emotions", "🔬 Comments"])
+    
+    with tab1:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(viz.plot_sentiment_distribution(df), use_container_width=True)
+        with col2:
+            timeline_fig = viz.plot_sentiment_timeline(df)
+            if timeline_fig:
+                st.plotly_chart(timeline_fig, use_container_width=True)
+    
+    with tab2:
+        radar_fig = viz.plot_emotion_radar(df)
+        if radar_fig:
+            st.plotly_chart(radar_fig, use_container_width=True)
+        
+        # Emotion statistics
+        st.markdown("#### Emotion Frequency")
+        all_emotions = [e for sublist in df['emotions'] for e in sublist]
+        emotion_counts = Counter(all_emotions)
+        
+        if emotion_counts:
+            cols = st.columns(len(emotion_counts))
+            for idx, (emotion, count) in enumerate(emotion_counts.most_common()):
+                with cols[idx]:
+                    percentage = (count / len(df)) * 100
+                    st.metric(f"{emotion}", f"{count}", f"{percentage:.1f}%")
+    
+    with tab3:
+        # Simple comment viewer
+        for idx, row in df.head(10).iterrows():
+            sentiment_color = {
+                'Positive': '#00D4AA',
+                'Slightly Positive': '#4AE8C5', 
+                'Neutral': '#FFD166',
+                'Slightly Negative': '#FF9E64',
+                'Negative': '#FF6B6B'
+            }.get(row['sentiment'], '#888')
+            
+            st.markdown(f"""
+            <div class="comment-card" style="border-left-color: {sentiment_color}">
+                <div style="display: flex; justify-content: space-between;">
+                    <b>👤 {row['author']}</b>
+                    <span>⬆️ {row['score']} • {row['sentiment_emoji']} {row['sentiment']}</span>
+                </div>
+                <div style="margin: 10px 0; color: #666;">
+                    Emotions: {', '.join(row['emotions'])} • Words: {row['word_count']} • Polarity: {row['polarity']:.3f}
+                </div>
+                <div>{row['body'][:200]}...</div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    return df
+
 def show_single_analysis():
-    """Single URL analysis functionality - Original working version"""
+    """Single URL analysis functionality"""
     st.markdown("### 🔗 Analyze Reddit Thread")
+    
+    # Check if we have a URL from trending posts analysis
+    if (st.session_state.get('trending_analysis_triggered') and 
+        st.session_state.get('trending_analysis_url')):
+        
+        url = st.session_state.trending_analysis_url
+        
+        # Reset the trigger so it doesn't loop
+        st.session_state.trending_analysis_triggered = False
+        st.session_state.trending_analysis_url = None
+        
+        # Update current URL input logic
+        st.session_state.url = url
+        st.session_state.single_analysis_url = url
+        
+        # Perform analysis immediately
+        st.info(f"🔍 Analyzing trending post: {url}")
+        perform_analysis(url)
+        return
+    
+    # Normal URL input
+    url = st.session_state.get('url', '')
     
     # URL Input
     col_in, col_btn = st.columns([5, 1])
     with col_in:
         url = st.text_input(
             "🔗 Reddit Thread URL", 
-            value=st.session_state.get('url', ''),
+            value=url,
             placeholder="https://www.reddit.com/r/...",
             help="Paste any Reddit thread URL",
             key="single_analysis_url"
@@ -1251,123 +1401,13 @@ def show_single_analysis():
                     st.session_state.url = demo_url
                     st.rerun()
 
-    # Analysis Processing - ORIGINAL WORKING VERSION
+    # Analysis Processing
     if analyze_btn and url:
         st.session_state.url = url
-        loader = RedditLoader()
-        nlp = EnhancedNLPEngine()
-        viz = EnhancedVizEngine()
-        
-        with st.status("🔍 Analyzing...", expanded=True) as status:
-            # Fetch data
-            status.update(label="🔄 Fetching data from Reddit...")
-            raw_data = loader.fetch(url)
-            if not raw_data['success']:
-                status.update(label="❌ Failed", state="error")
-                st.error(f"Error: {raw_data['error']}")
-                return
-            
-            # Process comments
-            status.update(label=f"🧠 Analyzing {len(raw_data['comments'])} comments...")
-            processed_comments = nlp.process_batch(raw_data['comments'])
-            df = pd.DataFrame(processed_comments)
-            df = df[df['word_count'] >= 3]  # Filter short comments
-            
-            # Save to session
-            st.session_state.current_analysis = {
-                'df': df, 
-                'meta': raw_data['meta'],
-                'processed_at': datetime.now()
-            }
-            
-            # Save to history
-            hist_entry = {
-                'id': str(time.time()), 
-                'url': url, 
-                'title': raw_data['meta']['title'][:50] + "...",
-                'sub': raw_data['meta']['subreddit'],
-                'comments': len(df),
-                'timestamp': datetime.now()
-            }
-            if not any(h['url'] == url for h in st.session_state.history):
-                st.session_state.history.append(hist_entry)
-            
-            status.update(label=f"✅ Analyzed {len(df)} comments", state="complete")
-
-        # Display Results
-        meta = raw_data['meta']
-        df = st.session_state.current_analysis['df']
-        
-        # KPIs
-        st.markdown("### 🏆 Executive Summary")
-        k1, k2, k3, k4 = st.columns(4)
-        
-        with k1:
-            st.metric("Total Engagement", f"{meta['score']:,}")
-        with k2:
-            st.metric("Comments Analyzed", f"{len(df):,}")
-        with k3:
-            avg_pol = df['polarity'].mean()
-            sentiment = "😊 Positive" if avg_pol > 0.1 else "😟 Negative" if avg_pol < -0.1 else "😐 Neutral"
-            st.metric("Avg Sentiment", f"{avg_pol:.3f}", delta=sentiment)
-        with k4:
-            st.metric("Avg Words", f"{df['word_count'].mean():.0f}")
-
-        # Analysis Tabs
-        tab1, tab2, tab3 = st.tabs(["📊 Overview", "🧠 Emotions", "🔬 Comments"])
-        
-        with tab1:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(viz.plot_sentiment_distribution(df), use_container_width=True)
-            with col2:
-                timeline_fig = viz.plot_sentiment_timeline(df)
-                if timeline_fig:
-                    st.plotly_chart(timeline_fig, use_container_width=True)
-        
-        with tab2:
-            radar_fig = viz.plot_emotion_radar(df)
-            if radar_fig:
-                st.plotly_chart(radar_fig, use_container_width=True)
-            
-            # Emotion statistics
-            st.markdown("#### Emotion Frequency")
-            all_emotions = [e for sublist in df['emotions'] for e in sublist]
-            emotion_counts = Counter(all_emotions)
-            
-            if emotion_counts:
-                cols = st.columns(len(emotion_counts))
-                for idx, (emotion, count) in enumerate(emotion_counts.most_common()):
-                    with cols[idx]:
-                        percentage = (count / len(df)) * 100
-                        st.metric(f"{emotion}", f"{count}", f"{percentage:.1f}%")
-        
-        with tab3:
-            # Simple comment viewer
-            for idx, row in df.head(10).iterrows():
-                sentiment_color = {
-                    'Positive': '#00D4AA',
-                    'Slightly Positive': '#4AE8C5', 
-                    'Neutral': '#FFD166',
-                    'Slightly Negative': '#FF9E64',
-                    'Negative': '#FF6B6B'
-                }.get(row['sentiment'], '#888')
-                
-                st.markdown(f"""
-                <div class="comment-card" style="border-left-color: {sentiment_color}">
-                    <div style="display: flex; justify-content: space-between;">
-                        <b>👤 {row['author']}</b>
-                        <span>⬆️ {row['score']} • {row['sentiment_emoji']} {row['sentiment']}</span>
-                    </div>
-                    <div style="margin: 10px 0; color: #666;">
-                        Emotions: {', '.join(row['emotions'])} • Words: {row['word_count']} • Polarity: {row['polarity']:.3f}
-                    </div>
-                    <div>{row['body'][:200]}...</div>
-                </div>
-                """, unsafe_allow_html=True)
+        perform_analysis(url)
 
     # Empty state for authenticated users
-    elif not analyze_btn:
+    elif not analyze_btn and not st.session_state.get('current_analysis'):
         st.markdown("---")
         st.markdown("""
         ## 🚀 Ready to Analyze Reddit Threads
@@ -1397,6 +1437,21 @@ def main():
         st.session_state.history = []
     if "current_analysis" not in st.session_state:
         st.session_state.current_analysis = None
+    if "trending_analysis_triggered" not in st.session_state:
+        st.session_state.trending_analysis_triggered = False
+    if "trending_analysis_url" not in st.session_state:
+        st.session_state.trending_analysis_url = None
+    
+    # NAVIGATION OPTIONS
+    NAV_DASHBOARD = "🏠 Dashboard"
+    NAV_TRENDING = "🔥 Trending Posts"
+    NAV_ANALYSIS = "📈 Trend Analysis"
+    NAV_SINGLE = "🔗 Single Analysis"
+    NAV_OPTIONS = [NAV_DASHBOARD, NAV_TRENDING, NAV_ANALYSIS, NAV_SINGLE]
+
+    # Initialize Active Tab
+    if "active_tab" not in st.session_state:
+        st.session_state.active_tab = NAV_DASHBOARD
 
     # --- ENHANCED SIDEBAR ---
     with st.sidebar:
@@ -1453,19 +1508,29 @@ def main():
         except Exception as e:
             st.error(f"Error loading groups: {e}")
 
-    # Main Navigation Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["🏠 Dashboard", "🔥 Trending Posts", "📈 Trend Analysis", "🔗 Single Analysis"])
+    # Main Navigation Tabs (Replaced st.tabs with st.radio for programmatic control)
+    # Using 'label_visibility="collapsed"' to hide the label "Navigation"
+    selected_nav = st.radio(
+        "Navigation", 
+        NAV_OPTIONS,
+        index=NAV_OPTIONS.index(st.session_state.active_tab) if st.session_state.active_tab in NAV_OPTIONS else 0,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="active_tab"
+    )
 
-    with tab1:
+    st.markdown("---")
+
+    if selected_nav == NAV_DASHBOARD:
         show_dashboard()
     
-    with tab2:
+    elif selected_nav == NAV_TRENDING:
         show_trending_posts()
     
-    with tab3:
+    elif selected_nav == NAV_ANALYSIS:
         show_trend_analysis()
     
-    with tab4:
+    elif selected_nav == NAV_SINGLE:
         show_single_analysis()
 
 def show_dashboard():
@@ -1475,20 +1540,33 @@ def show_dashboard():
     # Quick actions with proper navigation
     col1, col2, col3 = st.columns(3)
     
+    # --- MODIFIED: USE CALLBACKS TO AVOID SESSION STATE ERROR ---
     with col1:
-        if st.button("🔥 View Trending Posts", use_container_width=True, key="dashboard_trending"):
-            # This will navigate to the Trending Posts tab
-            st.success("Navigate to Trending Posts tab above!")
+        st.button(
+            "🔥 View Trending Posts", 
+            use_container_width=True, 
+            key="dashboard_trending",
+            on_click=switch_tab,
+            args=("🔥 Trending Posts",)
+        )
     
     with col2:
-        if st.button("📈 Analyze Trends", use_container_width=True, key="dashboard_trends"):
-            # This will navigate to the Trend Analysis tab
-            st.success("Navigate to Trend Analysis tab above!")
+        st.button(
+            "📈 Analyze Trends", 
+            use_container_width=True, 
+            key="dashboard_trends",
+            on_click=switch_tab,
+            args=("📈 Trend Analysis",)
+        )
     
     with col3:
-        if st.button("🔍 Single Analysis", use_container_width=True, key="dashboard_single"):
-            # This will navigate to the Single Analysis tab
-            st.success("Navigate to Single Analysis tab above!")
+        st.button(
+            "🔍 Single Analysis", 
+            use_container_width=True, 
+            key="dashboard_single",
+            on_click=switch_tab,
+            args=("🔗 Single Analysis",)
+        )
     
     # Recent activity or quick stats
     st.markdown("### 📈 Recent Activity")
