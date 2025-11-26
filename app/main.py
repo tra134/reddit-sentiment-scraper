@@ -16,21 +16,29 @@ import textwrap
 import streamlit.components.v1 as components
 import html
 
+# --- CẤU HÌNH API KEY (QUAN TRỌNG) ---
+
+GOOGLE_GEMINI_API_KEY = st.secrets["GOOGLE_API_KEY"]
+
+
 # Thêm thư mục gốc vào path để import các module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Optional NLP imports
+# --- OPTIONAL IMPORTS ---
+
+# 1. NLP TextBlob
 try:
     from textblob import TextBlob
     TEXTBLOB_AVAILABLE = True
 except ImportError:
     TEXTBLOB_AVAILABLE = False
 
+# 2. Google Gemini (Cho tóm tắt thông minh & nhanh)
 try:
-    from wordcloud import WordCloud, STOPWORDS
-    WORDCLOUD_AVAILABLE = True
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
 except ImportError:
-    WORDCLOUD_AVAILABLE = False
+    GEMINI_AVAILABLE = False
 
 # Import authentication modules
 try:
@@ -337,6 +345,12 @@ class RedditLoader:
         try:
             with st.spinner('🔄 Fetching Reddit data...'):
                 resp = self.session.get(clean_url, timeout=20)
+                
+                # --- SỬA LỖI FONT (QUAN TRỌNG) ---
+                # Ép buộc mã hóa UTF-8 để tránh lỗi ký tự lạ
+                resp.encoding = 'utf-8' 
+                # --------------------------------
+
                 if resp.status_code != 200: 
                     return {'success': False, 'error': f'HTTP {resp.status_code} - Unable to fetch data'}
                 
@@ -376,12 +390,64 @@ class RedditLoader:
                         'author': post.get('author'),
                         'created': datetime.fromtimestamp(post.get('created_utc')),
                         'url': post.get('url'),
-                        'permalink': post.get('permalink')
+                        'permalink': post.get('permalink'),
+                        'selftext': post.get('selftext', '')  # Captured for summarization
                     },
                     'comments': comments
                 }
         except Exception as e:
             return {'success': False, 'error': f'Connection error: {str(e)}'}
+
+# --- AI SUMMARIZER CLASS (GEMINI 1.5 FLASH) ---
+
+class AISummarizer:
+    def __init__(self):
+        self.model = None
+        self.api_key = GOOGLE_GEMINI_API_KEY
+        
+        if GEMINI_AVAILABLE and self.api_key and "DÁN_KEY" not in self.api_key:
+            try:
+                genai.configure(api_key=self.api_key)
+                self.model = genai.GenerativeModel('gemini-2.0-flash')
+            except Exception as e:
+                print(f"Lỗi cấu hình Gemini: {e}")
+
+    def generate_summary(self, title, body, top_comments):
+        if not GEMINI_AVAILABLE:
+            return "⚠️ Chưa cài thư viện Google AI. Hãy chạy: pip install google-generativeai"
+        
+        if not self.model:
+            return "⚠️ Chưa cấu hình API Key. Hãy dán Key vào dòng 27 của file code."
+
+        # Chuẩn bị nội dung
+        comments_text = ""
+        if top_comments:
+            # Lấy 10 comment để AI hiểu phản ứng cộng đồng
+            comments_text = "\n".join([f"- {c['body']}" for c in top_comments[:10]])
+
+        # Prompt tối ưu cho Tiếng Việt và Reddit
+        prompt = f"""
+        Bạn là một trợ lý AI thông minh. Hãy tóm tắt bài thảo luận Reddit sau bằng Tiếng Việt.
+        
+        THÔNG TIN:
+        - Tiêu đề: {title}
+        - Nội dung chính: {body}
+        - Bình luận nổi bật:
+        {comments_text}
+        
+        YÊU CẦU:
+        1. Tóm tắt nội dung chính: Vấn đề là gì? (Ngắn gọn).
+        2. Phản ứng cộng đồng: Mọi người khuyên gì/nghĩ gì?
+        3. Văn phong: Tự nhiên, dễ hiểu, KHÔNG LỖI FONT.
+        4. Trình bày: Dùng gạch đầu dòng.
+        """
+
+        try:
+            # Gọi API (Gemini Flash rất nhanh)
+            response = self.model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            return f"Lỗi khi gọi Gemini API: {str(e)}"
 
 class EnhancedNLPEngine:
     def __init__(self):
@@ -1236,6 +1302,9 @@ def perform_analysis(url):
     nlp = EnhancedNLPEngine()
     viz = EnhancedVizEngine()
     
+    # Initialize summarizer
+    ai_summarizer = AISummarizer()
+    
     with st.status("🔍 Analyzing...", expanded=True) as status:
         # Fetch data
         status.update(label="🔄 Fetching data from Reddit...")
@@ -1251,10 +1320,23 @@ def perform_analysis(url):
         df = pd.DataFrame(processed_comments)
         df = df[df['word_count'] >= 3]  # Filter short comments
         
+        # --- NEW: GENERATE SUMMARY WITH GEMINI ---
+        status.update(label="🤖 Generating AI Summary... (Using Gemini 1.5 Flash)")
+        
+        # Get selftext from meta (safely)
+        post_body = raw_data['meta'].get('selftext', '')
+        
+        summary_text = ai_summarizer.generate_summary(
+            title=raw_data['meta']['title'],
+            body=post_body,
+            top_comments=raw_data['comments']
+        )
+        
         # Save to session
         st.session_state.current_analysis = {
             'df': df, 
             'meta': raw_data['meta'],
+            'summary': summary_text,  # Stored summary
             'processed_at': datetime.now()
         }
         
@@ -1275,6 +1357,7 @@ def perform_analysis(url):
     # Display Results
     meta = raw_data['meta']
     df = st.session_state.current_analysis['df']
+    summary = st.session_state.current_analysis.get('summary', 'No summary available')
     
     # KPIs
     st.markdown("### 🏆 Executive Summary")
@@ -1291,8 +1374,27 @@ def perform_analysis(url):
     with k4:
         st.metric("Avg Words", f"{df['word_count'].mean():.0f}")
 
-    # Analysis Tabs
-    tab1, tab2, tab3 = st.tabs(["📊 Overview", "🧠 Emotions", "🔬 Comments"])
+    # Analysis Tabs - Added "Summary" Tab
+    tab_summary, tab1, tab2, tab3 = st.tabs(["📝 Summary", "📊 Overview", "🧠 Emotions", "🔬 Comments"])
+    
+    with tab_summary:
+        st.markdown("### 🤖 AI Executive Summary (Powered by Gemini)")
+        st.info("Bản tóm tắt này được tạo tự động bởi AI dựa trên tiêu đề, nội dung bài viết và các bình luận hàng đầu.")
+        
+        st.markdown(f"""
+        <div style="background-color: #2D3748; padding: 20px; border-radius: 10px; border-left: 5px solid #667eea; color: #E2E8F0; font-size: 1.1em; line-height: 1.6;">
+            {summary}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("#### 📌 Key Details")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            st.markdown(f"**Title:** {meta['title']}")
+            st.markdown(f"**Author:** {meta['author']}")
+        with col_s2:
+            st.markdown(f"**Subreddit:** r/{meta['subreddit']}")
+            st.markdown(f"**Posted:** {meta['created']}")
     
     with tab1:
         col1, col2 = st.columns(2)
@@ -1386,20 +1488,7 @@ def show_single_analysis():
         st.write("<br>", unsafe_allow_html=True)
         analyze_btn = st.button("🚀 ANALYZE", type="primary", use_container_width=True, key="single_analysis_btn")
 
-    # Demo URLs
-    with st.expander("🎯 Quick Demos"):
-        demos = {
-            "Technology": "https://www.reddit.com/r/technology/comments/example/",
-            "Programming": "https://www.reddit.com/r/programming/comments/example/", 
-            "Python": "https://www.reddit.com/r/Python/comments/example/"
-        }
-        
-        cols = st.columns(len(demos))
-        for idx, (name, demo_url) in enumerate(demos.items()):
-            with cols[idx]:
-                if st.button(f"📝 {name}", key=f"demo_{idx}"):
-                    st.session_state.url = demo_url
-                    st.rerun()
+    # REMOVED QUICK DEMOS AS REQUESTED
 
     # Analysis Processing
     if analyze_btn and url:
@@ -1420,7 +1509,6 @@ def show_single_analysis():
         - ⏳ **Temporal Trends** - See how sentiment evolves
         
         ### 💡 Pro Tips
-        - Use demo URLs for quick testing
         - Add groups in sidebar for personalized tracking
         - Export analysis for reports
         """)
@@ -1513,7 +1601,6 @@ def main():
     selected_nav = st.radio(
         "Navigation", 
         NAV_OPTIONS,
-        index=NAV_OPTIONS.index(st.session_state.active_tab) if st.session_state.active_tab in NAV_OPTIONS else 0,
         horizontal=True,
         label_visibility="collapsed",
         key="active_tab"

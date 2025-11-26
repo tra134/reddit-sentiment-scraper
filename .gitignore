@@ -1,10 +1,15 @@
-# Virtual Environment
-venv/
+# Bỏ qua các file chứa Key, Mật khẩu, Token
+.streamlit/secrets.toml
 .env
 .env.local
 .env.production
 
-# Python
+# --- Virtual Environment ---
+venv/
+env/
+ENV/
+
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -26,33 +31,39 @@ wheels/
 .installed.cfg
 *.egg
 
-# Database
+# --- Database ---
 *.db
 *.sqlite3
 
-# Logs
+# --- Logs ---
 *.log
 logs/
 
-# Data files
+# --- Data files (Project Specific) ---
+# Giữ lại cấu trúc thư mục nhưng bỏ qua file bên trong
 data/scraped_data/raw/*
 data/scraped_data/processed/*
 data/exports/*
 !data/exports/.gitkeep
 
-# Cache
+# --- Cache ---
 .cache/
 .pytest_cache/
 
-# IDE
+# --- IDE Settings ---
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
+# --- Operating System ---
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# ChromeDriver
+# --- WebDrivers ---
 chromedriver.exe
+chromedriver
+geckodriver.exe
+geckodriver
+msedgedriver.exe
