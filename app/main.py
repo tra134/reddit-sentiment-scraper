@@ -17,9 +17,11 @@ import streamlit.components.v1 as components
 import html
 
 # --- CẤU HÌNH API KEY (QUAN TRỌNG) ---
-
-GOOGLE_GEMINI_API_KEY = st.secrets["GOOGLE_API_KEY"]
-
+# Đảm bảo bạn đã thêm GOOGLE_API_KEY vào secrets trên Streamlit Cloud
+try:
+    GOOGLE_GEMINI_API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    GOOGLE_GEMINI_API_KEY = None # Xử lý lỗi nếu chưa cấu hình
 
 # Thêm thư mục gốc vào path để import các module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,14 +42,14 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-# Import authentication modules
+# Import authentication modules (Xử lý lỗi nếu chưa có database)
 try:
     from core.user_database import user_db_manager
     from core.auth import authenticate_user, logout
     from services.user_service import UserService
     AUTH_AVAILABLE = True
 except ImportError as e:
-    print(f"Authentication modules not available: {e}")
+    # print(f"Authentication modules not available: {e}")
     AUTH_AVAILABLE = False
 
 # --- PAGE CONFIG ---
@@ -244,7 +246,7 @@ def analyze_post_callback(url):
     st.session_state.trending_analysis_triggered = True
     st.session_state.active_tab = "🔗 Single Analysis"
 
-# --- TRENDING POSTS MANAGER ---
+# --- [UPDATE 1/2] TRENDING POSTS MANAGER (ANTI-BLOCK) ---
 
 class TrendingPostsManager:
     def __init__(self):
@@ -252,56 +254,81 @@ class TrendingPostsManager:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        # Danh sách server trung gian (Mirrors) để tránh bị chặn IP
+        self.instances = [
+            "https://l.opnxng.com",
+            "https://r.nf",
+            "https://snoo.habedieeh.re",
+            "https://reddit.smnz.de",
+            "https://libreddit.bus-hit.me"
+        ]
     
     def fetch_trending_posts(self, subreddit, limit=10, time_filter='day'):
-        """Fetch trending posts from a subreddit"""
-        try:
-            headers ={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.google.com/"
-            }
-            url = f"https://old.reddit.com/r/{subreddit}/top/.json?limit={limit}&t={time_filter}"
-            response = self.session.get(url,headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                posts = []
+        """Fetch trending posts using Mirrors"""
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+
+        # Thử lần lượt các server mirror
+        for instance in self.instances:
+            try:
+                # Tạo URL mirror
+                url = f"{instance}/r/{subreddit}/top.json?limit={limit}&t={time_filter}"
                 
-                for post in data['data']['children']:
-                    post_data = post['data']
-                    posts.append({
-                        'id': post_data['id'],
-                        'title': post_data['title'],
-                        'author': post_data['author'],
-                        'score': post_data['score'],
-                        'comments_count': post_data['num_comments'],
-                        'created_utc': post_data['created_utc'],
-                        'url': f"https://reddit.com{post_data['permalink']}",
-                        'subreddit': subreddit,
-                        'upvote_ratio': post_data.get('upvote_ratio', 0),
-                        'thumbnail': post_data.get('thumbnail', ''),
-                        'is_video': post_data.get('is_video', False),
-                        'over_18': post_data.get('over_18', False)
-                    })
+                # Gọi request
+                response = self.session.get(url, headers=headers, timeout=8)
                 
-                return posts
-            else:
-                return []
+                if response.status_code == 200:
+                    data = response.json()
+                    posts = []
+                    
+                    # Cấu trúc JSON mirror thường giống Reddit gốc
+                    children = data.get('data', {}).get('children', [])
+                    
+                    for post in children:
+                        post_data = post.get('data', {})
+                        posts.append({
+                            'id': post_data.get('id'),
+                            'title': post_data.get('title'),
+                            'author': post_data.get('author'),
+                            'score': post_data.get('score', 0),
+                            'comments_count': post_data.get('num_comments', 0),
+                            'created_utc': post_data.get('created_utc'),
+                            # Tạo link gốc về reddit để user click vào xem
+                            'url': f"https://www.reddit.com{post_data.get('permalink')}",
+                            'subreddit': subreddit,
+                            'upvote_ratio': post_data.get('upvote_ratio', 0),
+                            'thumbnail': post_data.get('thumbnail', ''),
+                            'is_video': post_data.get('is_video', False),
+                            'over_18': post_data.get('over_18', False)
+                        })
+                    
+                    # Nếu lấy thành công thì trả về luôn, thoát vòng lặp
+                    return posts
                 
-        except Exception as e:
-            print(f"Error fetching trending posts from r/{subreddit}: {e}")
-            return []
+            except Exception:
+                continue # Thử server tiếp theo nếu lỗi
+
+        # Nếu thử hết mà vẫn không được
+        return []
     
     def fetch_multiple_subreddits(self, subreddits, limit_per_sub=5):
         """Fetch trending posts from multiple subreddits"""
         all_posts = []
         
-        for subreddit in subreddits:
+        # Tạo thanh tiến trình
+        progress_bar = st.progress(0)
+        total = len(subreddits)
+
+        for i, subreddit in enumerate(subreddits):
             posts = self.fetch_trending_posts(subreddit, limit=limit_per_sub)
             all_posts.extend(posts)
-            time.sleep(0.5)  # Be nice to Reddit API
+            progress_bar.progress((i + 1) / total)
+            time.sleep(0.1)  # Nghỉ nhẹ
         
+        progress_bar.empty()
+
         # Sort by score and return
         all_posts.sort(key=lambda x: x['score'], reverse=True)
         return all_posts
@@ -336,7 +363,7 @@ class TrendingPostsManager:
         
         return subreddit_stats
 
-# --- ENHANCED CORE FUNCTIONALITY CLASSES ---
+# --- [UPDATE 2/2] REDDIT LOADER (ANTI-BLOCK FOR SINGLE POST) ---
 
 class RedditLoader:
     def __init__(self):
@@ -344,64 +371,104 @@ class RedditLoader:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        self.instances = [
+            "https://l.opnxng.com",
+            "https://r.nf",
+            "https://snoo.habedieeh.re",
+            "https://reddit.smnz.de",
+            "https://libreddit.bus-hit.me"
+        ]
 
     def fetch(self, url):
-        clean_url = (url.split('?')[0] if '?' in url else url.rstrip('/')) + '.json'
-        try:
-            with st.spinner('🔄 Fetching Reddit data...'):
-                resp = self.session.get(clean_url, timeout=20)
-                
-                # --- SỬA LỖI FONT (QUAN TRỌNG) ---
-                # Ép buộc mã hóa UTF-8 để tránh lỗi ký tự lạ
-                resp.encoding = 'utf-8' 
-                # --------------------------------
+        """Fetch single post data using Mirrors to bypass blocking"""
+        
+        # 1. Trích xuất đường dẫn (path) từ URL gốc
+        # Ví dụ: https://www.reddit.com/r/funny/comments/xyz/ -> /r/funny/comments/xyz/
+        path = ""
+        if "reddit.com" in url:
+            try:
+                path = url.split("reddit.com")[-1]
+            except:
+                return {'success': False, 'error': 'Invalid Reddit URL'}
+        elif url.startswith("/r/"):
+             path = url
+        else:
+             # URL không hợp lệ
+             return {'success': False, 'error': 'Invalid URL format'}
+        
+        # Xóa query params nếu có
+        if "?" in path:
+            path = path.split("?")[0]
+        
+        # Đảm bảo có đuôi .json
+        if not path.endswith(".json"):
+            if path.endswith("/"):
+                path = path[:-1] + ".json"
+            else:
+                path = path + ".json"
 
-                if resp.status_code != 200: 
-                    return {'success': False, 'error': f'HTTP {resp.status_code} - Unable to fetch data'}
+        # 2. Xoay vòng qua các Mirrors để lấy dữ liệu
+        for instance in self.instances:
+            try:
+                mirror_url = f"{instance}{path}"
                 
-                data = resp.json()
-                post = data[0]['data']['children'][0]['data']
-                comments = []
-                
-                def process_comments(children_list, depth=0):
-                    for item in children_list:
-                        if item['kind'] == 't1':  # Comment
-                            d = item['data']
-                            body = d.get('body', '')
-                            if body and body not in ['[deleted]', '[removed]']:
-                                comments.append({
-                                    'id': d.get('id'),
-                                    'author': d.get('author', 'Unknown'),
-                                    'body': body,
-                                    'score': d.get('score', 0),
-                                    'created_utc': d.get('created_utc'),
-                                    'timestamp': datetime.fromtimestamp(d.get('created_utc', 0)),
-                                    'depth': d.get('depth', 0),
-                                    'permalink': f"https://reddit.com{d.get('permalink', '')}"
-                                })
-                            if 'replies' in d and d['replies'] and isinstance(d['replies'], dict):
-                                process_comments(d['replies']['data']['children'], depth + 1)
-                
-                process_comments(data[1]['data']['children'])
-                
-                return {
-                    'success': True,
-                    'meta': {
-                        'title': post.get('title'),
-                        'subreddit': post.get('subreddit'),
-                        'score': post.get('score'),
-                        'upvote_ratio': post.get('upvote_ratio'),
-                        'comments_count': post.get('num_comments'),
-                        'author': post.get('author'),
-                        'created': datetime.fromtimestamp(post.get('created_utc')),
-                        'url': post.get('url'),
-                        'permalink': post.get('permalink'),
-                        'selftext': post.get('selftext', '')  # Captured for summarization
-                    },
-                    'comments': comments
-                }
-        except Exception as e:
-            return {'success': False, 'error': f'Connection error: {str(e)}'}
+                with st.spinner(f'🔄 Fetching data (trying {instance.split("//")[1]})...'):
+                    resp = self.session.get(mirror_url, timeout=15)
+                    
+                    if resp.status_code == 200:
+                        # --- XỬ LÝ DỮ LIỆU ---
+                        data = resp.json()
+                        
+                        # Cấu trúc JSON của mirror giống Reddit: List 2 phần tử [Post, Comments]
+                        post_data = data[0]['data']['children'][0]['data']
+                        comments_data = data[1]['data']['children']
+                        
+                        comments = []
+                        
+                        # Hàm đệ quy lấy comment
+                        def process_comments_recursive(children_list, depth=0):
+                            for item in children_list:
+                                if item['kind'] == 't1':  # Comment
+                                    d = item['data']
+                                    body = d.get('body', '')
+                                    if body and body not in ['[deleted]', '[removed]']:
+                                        comments.append({
+                                            'id': d.get('id'),
+                                            'author': d.get('author', 'Unknown'),
+                                            'body': body,
+                                            'score': d.get('score', 0),
+                                            'created_utc': d.get('created_utc'),
+                                            'timestamp': datetime.fromtimestamp(d.get('created_utc', 0)),
+                                            'depth': d.get('depth', 0),
+                                            'permalink': f"https://reddit.com{d.get('permalink', '')}"
+                                        })
+                                    
+                                    # Lấy replies (comment con)
+                                    if 'replies' in d and d['replies'] and isinstance(d['replies'], dict):
+                                        process_comments_recursive(d['replies']['data']['children'], depth + 1)
+                        
+                        process_comments_recursive(comments_data)
+                        
+                        return {
+                            'success': True,
+                            'meta': {
+                                'title': post_data.get('title'),
+                                'subreddit': post_data.get('subreddit'),
+                                'score': post_data.get('score'),
+                                'upvote_ratio': post_data.get('upvote_ratio'),
+                                'comments_count': post_data.get('num_comments'),
+                                'author': post_data.get('author'),
+                                'created': datetime.fromtimestamp(post_data.get('created_utc', 0)),
+                                'url': post_data.get('url'),
+                                'permalink': post_data.get('permalink'),
+                                'selftext': post_data.get('selftext', '')
+                            },
+                            'comments': comments
+                        }
+            except Exception:
+                continue # Thử mirror tiếp theo
+
+        return {'success': False, 'error': 'All mirrors failed to fetch data. Reddit blocked access.'}
 
 # --- AI SUMMARIZER CLASS (GEMINI 2.0 FLASH) ---
 
@@ -410,10 +477,11 @@ class AISummarizer:
         self.model = None
         self.api_key = GOOGLE_GEMINI_API_KEY
         
-        if GEMINI_AVAILABLE and self.api_key and "DÁN_KEY" not in self.api_key:
+        if GEMINI_AVAILABLE and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-2.0-flash')
+                # Dùng model Flash cho nhanh và miễn phí
+                self.model = genai.GenerativeModel('gemini-1.5-flash') 
             except Exception as e:
                 print(f"Lỗi cấu hình Gemini: {e}")
 
@@ -422,7 +490,7 @@ class AISummarizer:
             return "⚠️ Chưa cài thư viện Google AI. Hãy chạy: pip install google-generativeai"
         
         if not self.model:
-            return "⚠️ Chưa cấu hình API Key. Hãy dán Key vào dòng 27 của file code."
+            return "⚠️ Chưa cấu hình API Key hoặc lỗi Key."
 
         # Chuẩn bị nội dung
         comments_text = ""
@@ -1312,7 +1380,7 @@ def perform_analysis(url):
     
     with st.status("🔍 Analyzing...", expanded=True) as status:
         # Fetch data
-        status.update(label="🔄 Fetching data from Reddit...")
+        status.update(label="🔄 Fetching data from Reddit (using Mirrors)...")
         raw_data = loader.fetch(url)
         if not raw_data['success']:
             status.update(label="❌ Failed", state="error")
@@ -1323,10 +1391,16 @@ def perform_analysis(url):
         status.update(label=f"🧠 Analyzing {len(raw_data['comments'])} comments...")
         processed_comments = nlp.process_batch(raw_data['comments'])
         df = pd.DataFrame(processed_comments)
+        
+        if df.empty:
+            status.update(label="⚠️ No comments to analyze", state="error")
+            st.warning("Bài viết này không có bình luận nào để phân tích.")
+            return None
+            
         df = df[df['word_count'] >= 3]  # Filter short comments
         
         # --- NEW: GENERATE SUMMARY WITH GEMINI ---
-        status.update(label="🤖 Generating AI Summary... (Using Gemini 1.5 Flash)")
+        status.update(label="🤖 Generating AI Summary... (Using Gemini)")
         
         # Get selftext from meta (safely)
         post_body = raw_data['meta'].get('selftext', '')
