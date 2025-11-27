@@ -1,4 +1,5 @@
 # app/main.py
+import feedparser
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -15,13 +16,11 @@ import os
 import textwrap
 import streamlit.components.v1 as components
 import html
-import feedparser  # THƯ VIỆN QUAN TRỌNG ĐỂ TRÁNH BỊ CHẶN (RSS)
 
 # --- CẤU HÌNH API KEY (QUAN TRỌNG) ---
-try:
-    GOOGLE_GEMINI_API_KEY = st.secrets["GOOGLE_API_KEY"]
-except:
-    GOOGLE_GEMINI_API_KEY = None
+
+GOOGLE_GEMINI_API_KEY = st.secrets["GOOGLE_API_KEY"]
+
 
 # Thêm thư mục gốc vào path để import các module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,14 +42,13 @@ except ImportError:
     GEMINI_AVAILABLE = False
 
 # Import authentication modules
-# Sử dụng try-except để code không bị crash nếu thiếu file database
 try:
     from core.user_database import user_db_manager
     from core.auth import authenticate_user, logout
     from services.user_service import UserService
     AUTH_AVAILABLE = True
-except ImportError:
-    # print("⚠️ Authentication modules not found. Running in standalone mode.")
+except ImportError as e:
+    print(f"Authentication modules not available: {e}")
     AUTH_AVAILABLE = False
 
 # --- PAGE CONFIG ---
@@ -247,184 +245,174 @@ def analyze_post_callback(url):
     st.session_state.trending_analysis_triggered = True
     st.session_state.active_tab = "🔗 Single Analysis"
 
-# --- CORE FUNCTIONALITY: REDDIT LOADER (RSS VERSION - CHỐNG BLOCK) ---
-
-class RedditLoader:
-    def __init__(self):
-        # RSS không cần requests session phức tạp
-        pass
-
-    def clean_html(self, raw_html):
-        """Làm sạch các thẻ HTML từ dữ liệu RSS"""
-        if not raw_html: return ""
-        cleanr = re.compile('<.*?>')
-        cleantext = re.sub(cleanr, '', raw_html)
-        return cleantext.strip()
-
-    def fetch(self, url):
-        # Chuyển đổi URL bài viết sang URL RSS để tránh bị chặn 429
-        # VD: reddit.com/r/abc/comments/123/ --> reddit.com/r/abc/comments/123/.rss
-        if ".rss" not in url:
-            clean_url = url.split('?')[0].rstrip('/') + '.rss'
-        else:
-            clean_url = url
-
-        try:
-            with st.spinner('📡 Đang kết nối qua kênh RSS (An toàn, không chặn IP)...'):
-                # Sử dụng feedparser để đọc XML
-                feed = feedparser.parse(clean_url)
-                
-                # Kiểm tra lỗi (Bozo bit)
-                if feed.bozo and len(feed.entries) == 0: 
-                    return {'success': False, 'error': '❌ Không thể đọc RSS. Link sai hoặc Reddit chặn tạm thời.'}
-                
-                if not feed.entries:
-                    return {'success': False, 'error': '⚠️ Không tìm thấy nội dung. Bài viết có thể đã bị xóa.'}
-
-                # Entry đầu tiên [0] luôn là Post gốc
-                post_entry = feed.entries[0]
-                
-                # Lấy metadata
-                post_title = post_entry.title if 'title' in post_entry else "No Title"
-                post_author = post_entry.author if 'author' in post_entry else "Unknown"
-                post_link = post_entry.link if 'link' in post_entry else url
-                subreddit = feed.feed.get('subtitle', 'Reddit').replace('r/', '')
-                
-                # Nội dung bài viết
-                raw_content = post_entry.content[0].value if 'content' in post_entry else post_entry.summary
-                post_content = self.clean_html(raw_content)
-
-                # Các entry sau [1:] là Comment
-                comments = []
-                for entry in feed.entries[1:]:
-                    raw_body = entry.content[0].value if 'content' in entry else entry.summary
-                    clean_body = self.clean_html(raw_body)
-                    
-                    # RSS không cung cấp score chi tiết cho comment, gán mặc định
-                    comments.append({
-                        'body': clean_body,
-                        'author': entry.author if 'author' in entry else "Unknown",
-                        'score': 0, 
-                        'created_utc': time.mktime(entry.updated_parsed) if entry.updated_parsed else time.time(),
-                        'permalink': entry.link,
-                        'timestamp': datetime.fromtimestamp(time.mktime(entry.updated_parsed)) if entry.updated_parsed else datetime.now()
-                    })
-
-                return {
-                    'success': True,
-                    'meta': {
-                        'title': post_title,
-                        'subreddit': subreddit,
-                        'score': 0, # RSS không có score realtime cho post
-                        'num_comments': len(comments),
-                        'author': post_author,
-                        'created': datetime.fromtimestamp(time.mktime(post_entry.updated_parsed)) if post_entry.updated_parsed else datetime.now(),
-                        'url': post_link,
-                        'permalink': post_link,
-                        'selftext': post_content
-                    },
-                    'comments': comments
-                }
-
-        except Exception as e:
-            return {'success': False, 'error': f'Lỗi hệ thống: {str(e)}'}
-
-# --- TRENDING POSTS MANAGER (RSS VERSION) ---
+# --- TRENDING POSTS MANAGER ---
 
 class TrendingPostsManager:
     def __init__(self):
-        pass
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
     
     def fetch_trending_posts(self, subreddit, limit=10, time_filter='day'):
-        """Fetch trending posts using RSS to avoid blocking"""
-        # RSS URL cho top/hot: https://www.reddit.com/r/{subreddit}/hot.rss
-        url = f"https://www.reddit.com/r/{subreddit}/hot.rss?limit={limit}"
-        
+        """Fetch trending posts from a subreddit"""
         try:
-            feed = feedparser.parse(url)
-            posts = []
+            url = f"https://www.reddit.com/r/{subreddit}/top/.json?limit={limit}&t={time_filter}"
+            response = self.session.get(url, timeout=10)
             
-            for entry in feed.entries[:limit]:
-                # Extract image if any
-                thumbnail = ''
-                if 'content' in entry:
-                    content_str = entry.content[0].value
-                    img_match = re.search(r'src="(https://i.redd.it/[^"]+)"', content_str)
-                    if img_match:
-                        thumbnail = img_match.group(1)
-
-                posts.append({
-                    'id': entry.id if 'id' in entry else str(hash(entry.link)),
-                    'title': entry.title,
-                    'author': entry.author if 'author' in entry else "Unknown",
-                    'score': 0, # RSS hidden score
-                    'comments_count': 0, # RSS hidden count
-                    'created_utc': time.mktime(entry.updated_parsed) if entry.updated_parsed else time.time(),
-                    'url': entry.link,
-                    'subreddit': subreddit,
-                    'thumbnail': thumbnail
-                })
-            
-            return posts
+            if response.status_code == 200:
+                data = response.json()
+                posts = []
+                
+                for post in data['data']['children']:
+                    post_data = post['data']
+                    posts.append({
+                        'id': post_data['id'],
+                        'title': post_data['title'],
+                        'author': post_data['author'],
+                        'score': post_data['score'],
+                        'comments_count': post_data['num_comments'],
+                        'created_utc': post_data['created_utc'],
+                        'url': f"https://reddit.com{post_data['permalink']}",
+                        'subreddit': subreddit,
+                        'upvote_ratio': post_data.get('upvote_ratio', 0),
+                        'thumbnail': post_data.get('thumbnail', ''),
+                        'is_video': post_data.get('is_video', False),
+                        'over_18': post_data.get('over_18', False)
+                    })
+                
+                return posts
+            else:
+                return []
+                
         except Exception as e:
-            print(f"Error fetching trending RSS for {subreddit}: {e}")
+            print(f"Error fetching trending posts from r/{subreddit}: {e}")
             return []
     
     def fetch_multiple_subreddits(self, subreddits, limit_per_sub=5):
+        """Fetch trending posts from multiple subreddits"""
         all_posts = []
+        
         for subreddit in subreddits:
             posts = self.fetch_trending_posts(subreddit, limit=limit_per_sub)
             all_posts.extend(posts)
+            time.sleep(0.5)  # Be nice to Reddit API
+        
+        # Sort by score and return
+        all_posts.sort(key=lambda x: x['score'], reverse=True)
         return all_posts
     
     def analyze_trends(self, posts):
         """Analyze trends from posts"""
-        if not posts: return {}
+        if not posts:
+            return {}
         
+        # Analyze by subreddit
         subreddit_stats = {}
         for post in posts:
             sub = post['subreddit']
             if sub not in subreddit_stats:
                 subreddit_stats[sub] = {
-                    'count': 0, 
-                    'total_score': 0, 
-                    'total_comments': 0, 
-                    'posts': [],
-                    'avg_score': 0, # Placeholder
-                    'avg_comments': 0 # Placeholder
+                    'count': 0,
+                    'total_score': 0,
+                    'total_comments': 0,
+                    'posts': []
                 }
             
             subreddit_stats[sub]['count'] += 1
+            subreddit_stats[sub]['total_score'] += post['score']
+            subreddit_stats[sub]['total_comments'] += post['comments_count']
             subreddit_stats[sub]['posts'].append(post)
+        
+        # Calculate averages
+        for sub in subreddit_stats:
+            stats = subreddit_stats[sub]
+            stats['avg_score'] = stats['total_score'] / stats['count']
+            stats['avg_comments'] = stats['total_comments'] / stats['count']
         
         return subreddit_stats
 
-# --- AI SUMMARIZER CLASS (GEMINI FALLBACK LOGIC) ---
-# FIX LỖI 404 MODEL
+# --- ENHANCED CORE FUNCTIONALITY CLASSES ---
+
+class RedditLoader:
+    def clean_html(self, raw_html):
+        if not raw_html: return ""
+        cleanr = re.compile('<.*?>')
+        return re.sub(cleanr, '', raw_html).strip()
+
+    def fetch(self, url):
+        clean_url = url.split('?')[0].rstrip('/') + '.rss' if ".rss" not in url else url
+        try:
+            with st.spinner('📡 Đang kết nối RSS (Chống chặn IP)...'):
+                feed = feedparser.parse(clean_url)
+                
+                if feed.bozo and not feed.entries:
+                    return {'success': False, 'error': '❌ Link sai hoặc Reddit chặn.'}
+                if not feed.entries:
+                    return {'success': False, 'error': '⚠️ Không tìm thấy dữ liệu.'}
+
+                post = feed.entries[0]
+                comments = []
+                for entry in feed.entries[1:]:
+                    body = self.clean_html(entry.content[0].value if 'content' in entry else entry.summary)
+                    
+                    # --- FIX LỖI Ở ĐÂY: TẠO TIMESTAMP ---
+                    created_ts = time.mktime(entry.updated_parsed) if entry.updated_parsed else time.time()
+                    
+                    comments.append({
+                        'body': body,
+                        'author': entry.author if 'author' in entry else "Unknown",
+                        'score': 0, 
+                        'created_utc': created_ts,
+                        'timestamp': datetime.fromtimestamp(created_ts) # <--- DÒNG QUAN TRỌNG ĐỂ SỬA LỖI
+                    })
+
+                return {
+                    'success': True,
+                    'meta': {
+                        'title': post.title,
+                        'subreddit': feed.feed.get('subtitle', 'Reddit').replace('r/', ''),
+                        'score': 0, 'num_comments': len(comments),
+                        'author': post.author if 'author' in post else "Unknown",
+                        'created': datetime.fromtimestamp(time.mktime(post.updated_parsed)) if post.updated_parsed else datetime.now(),
+                        'url': post.link,
+                        'selftext': self.clean_html(post.content[0].value if 'content' in post else post.summary)
+                    },
+                    'comments': comments
+                }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+# --- AI SUMMARIZER CLASS (GEMINI 1.5 FLASH) ---
 
 class AISummarizer:
     def __init__(self):
+        self.model = None
         self.api_key = GOOGLE_GEMINI_API_KEY
-        # Cấu hình API nếu có key
-        if GEMINI_AVAILABLE and self.api_key:
+        
+        if GEMINI_AVAILABLE and self.api_key and "DÁN_KEY" not in self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
+                self.model = genai.GenerativeModel('gemini-2.0-flash')
             except Exception as e:
                 print(f"Lỗi cấu hình Gemini: {e}")
 
     def generate_summary(self, title, body, top_comments):
         if not GEMINI_AVAILABLE:
-            return "⚠️ Chưa cài thư viện `google-generativeai`. Chạy `pip install google-generativeai`."
+            return "⚠️ Chưa cài thư viện Google AI. Hãy chạy: pip install google-generativeai"
         
-        if not self.api_key:
-            return "⚠️ Chưa cấu hình API Key. Vui lòng kiểm tra `.streamlit/secrets.toml`."
+        if not self.model:
+            return "⚠️ Chưa cấu hình API Key. Hãy dán Key vào dòng 27 của file code."
 
+        # Chuẩn bị nội dung
         comments_text = ""
         if top_comments:
+            # Lấy 10 comment để AI hiểu phản ứng cộng đồng
             comments_text = "\n".join([f"- {c['body']}" for c in top_comments[:10]])
 
+        # Prompt tối ưu cho Tiếng Việt và Reddit
         prompt = f"""
-        Bạn là một trợ lý AI thông minh. Hãy tóm tắt bài thảo luận Reddit sau bằng TIẾNG VIỆT (Markdown).
+        Bạn là một trợ lý AI thông minh. Hãy tóm tắt bài thảo luận Reddit sau bằng Tiếng Việt.
         
         THÔNG TIN:
         - Tiêu đề: {title}
@@ -433,28 +421,18 @@ class AISummarizer:
         {comments_text}
         
         YÊU CẦU:
-        1. **Vấn đề chính:** Tóm tắt ngắn gọn vấn đề đang được thảo luận.
-        2. **Phản ứng cộng đồng:** Người dùng đồng tình, phản đối hay đưa ra lời khuyên gì?
-        3. **Cảm xúc chủ đạo:** Tích cực / Tiêu cực / Trung lập.
+        1. Tóm tắt nội dung chính: Vấn đề là gì? (Ngắn gọn).
+        2. Phản ứng cộng đồng: Mọi người khuyên gì/nghĩ gì?
+        3. Văn phong: Tự nhiên, dễ hiểu, KHÔNG LỖI FONT.
+        4. Trình bày: Dùng gạch đầu dòng.
         """
 
-        # CƠ CHẾ FALLBACK MODEL THÔNG MINH
         try:
-            # Ưu tiên thử model Flash (Nhanh & Rẻ)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
+            # Gọi API (Gemini Flash rất nhanh)
+            response = self.model.generate_content(prompt)
             return response.text
         except Exception as e:
-            # Nếu lỗi (ví dụ: 404 Model not found), chuyển sang Gemini Pro (Ổn định)
-            print(f"Flash model error: {e}, switching to Pro...")
-            try:
-                model = genai.GenerativeModel('gemini-pro')
-                response = model.generate_content(prompt)
-                return response.text
-            except Exception as e2:
-                return f"Lỗi khi gọi AI (Đã thử cả Flash và Pro): {str(e2)}"
-
-# --- NLP ENGINE ---
+            return f"Lỗi khi gọi Gemini API: {str(e)}"
 
 class EnhancedNLPEngine:
     def __init__(self):
@@ -469,23 +447,25 @@ class EnhancedNLPEngine:
         
     def analyze_text(self, text):
         # Enhanced sentiment analysis
-        polarity = 0
-        subjectivity = 0.5
-        
         if TEXTBLOB_AVAILABLE:
             blob = TextBlob(text)
             polarity = blob.sentiment.polarity
             subjectivity = blob.sentiment.subjectivity
         else:
-            # Fallback basic sentiment
+            # Enhanced fallback sentiment
             positive_words = {'good', 'great', 'excellent', 'amazing', 'love', 'best', 'awesome', 'fantastic', 'perfect', 'wonderful'}
             negative_words = {'bad', 'terrible', 'awful', 'hate', 'worst', 'horrible', 'disgusting', 'stupid', 'ridiculous'}
+            
             words = set(re.findall(r'\w+', text.lower()))
             pos_count = len(words.intersection(positive_words))
             neg_count = len(words.intersection(negative_words))
             total_words = len(words)
+            
             if total_words > 0:
                 polarity = (pos_count - neg_count) / total_words
+            else:
+                polarity = 0
+            subjectivity = 0.5 + (abs(polarity) * 0.3)
 
         # Enhanced sentiment categorization
         if polarity > 0.2: 
@@ -528,28 +508,32 @@ class EnhancedNLPEngine:
             'polarity': polarity,
             'subjectivity': subjectivity,
             'emotions': top_emotions,
-            'word_count': len(text.split())
+            'emotion_scores': emotion_scores,
+            'word_count': len(text.split()),
+            'char_count': len(text),
+            'readability_score': max(0, min(100, 100 - (len(text.split()) / 3)))  # Simple readability estimate
         }
 
     def process_batch(self, comments):
         results = []
         total_comments = len(comments)
         
-        # Use a simpler progress indicator
+        # Use a simpler progress indicator for better performance
+        progress_text = st.empty()
         progress_bar = st.progress(0)
         
         for i, comment in enumerate(comments):
             analysis = self.analyze_text(comment['body'])
             results.append(comment | analysis)
             
-            # Update progress less frequently
-            if i % 5 == 0 or i == total_comments - 1:
+            # Update progress less frequently for better performance
+            if i % 10 == 0 or i == total_comments - 1:
                 progress_bar.progress((i + 1) / total_comments)
+                progress_text.text(f"🔄 Processing comments... {i+1}/{total_comments}")
         
         progress_bar.empty()
+        progress_text.empty()
         return results
-
-# --- VIZ ENGINE ---
 
 class EnhancedVizEngine:
     @staticmethod
@@ -557,6 +541,7 @@ class EnhancedVizEngine:
         sentiment_order = ['Positive', 'Slightly Positive', 'Neutral', 'Slightly Negative', 'Negative']
         counts = df['sentiment'].value_counts().reindex(sentiment_order, fill_value=0)
         
+        # Bright colors for dark theme
         color_map = {
             'Positive': '#00D4AA',
             'Slightly Positive': '#4AE8C5',
@@ -573,7 +558,15 @@ class EnhancedVizEngine:
             color_discrete_map=color_map,
             title="🧠 Sentiment Distribution Analysis"
         )
-        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white')
+        fig.update_traces(textposition='inside', textinfo='percent+label', textfont_color='white')
+        fig.update_layout(
+            font=dict(size=12, color='white'),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font_color='white'
+        )
         return fig
 
     @staticmethod
@@ -603,35 +596,135 @@ class EnhancedVizEngine:
                 angularaxis=dict(gridcolor='#4A5568', color='white'),
                 bgcolor='rgba(0,0,0,0)'
             ),
+            showlegend=False, 
+            height=400,
             title="😊 Emotional Footprint Analysis",
+            font=dict(size=12, color='white'),
             paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            font_color='white'
+            plot_bgcolor='rgba(0,0,0,0)'
         )
         return fig
 
     @staticmethod
     def plot_sentiment_timeline(df):
-        if len(df) < 2: return None
-        
-        # Ensure timestamp is datetime
-        try:
-            df['dt'] = pd.to_datetime(df['created_utc'], unit='s')
-        except:
+        if len(df) < 2: 
             return None
-            
-        df = df.sort_values('dt')
         
+        if 'timestamp' not in df.columns:
+            try:
+                # Cố gắng tạo timestamp từ created_utc
+                df['timestamp'] = pd.to_datetime(df['created_utc'], unit='s')
+            except Exception:
+                return None # Nếu không tạo được thì bỏ qua biểu đồ này
+            
+        df_copy = df.copy().sort_values('timestamp')
+        window_size = max(1, min(20, int(len(df_copy)/3)))
+        df_copy['MA'] = df_copy['polarity'].rolling(window=window_size, center=True, min_periods=1).mean()
+        
+        fig = go.Figure()
+        
+        # Add scatter points with sentiment colors
         color_map = {
-            'Positive': '#00D4AA', 'Slightly Positive': '#4AE8C5',
-            'Neutral': '#FFD166', 'Slightly Negative': '#FF9E64', 'Negative': '#FF6B6B'
+            'Positive': '#00D4AA',
+            'Slightly Positive': '#4AE8C5',
+            'Neutral': '#FFD166',
+            'Slightly Negative': '#FF9E64',
+            'Negative': '#FF6B6B'
         }
         
-        fig = px.scatter(df, x='dt', y='polarity', color='sentiment',
-                         title="📈 Sentiment Evolution Over Time",
-                         color_discrete_map=color_map)
-        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='white',
-                          xaxis=dict(gridcolor='#4A5568'), yaxis=dict(gridcolor='#4A5568'))
+        for sentiment in df_copy['sentiment'].unique():
+            sentiment_df = df_copy[df_copy['sentiment'] == sentiment]
+            fig.add_trace(go.Scatter(
+                x=sentiment_df['timestamp'], 
+                y=sentiment_df['polarity'], 
+                mode='markers',
+                marker=dict(
+                    color=color_map.get(sentiment, '#888'),
+                    size=8,
+                    opacity=0.6,
+                    line=dict(width=1, color='white')
+                ),
+                name=sentiment,
+                hovertemplate='<b>%{text}</b><br>Time: %{x}<br>Polarity: %{y:.3f}<extra></extra>',
+                text=[f"Sentiment: {s}" for s in sentiment_df['sentiment']]
+            ))
+        
+        # Add trend line
+        fig.add_trace(go.Scatter(
+            x=df_copy['timestamp'], 
+            y=df_copy['MA'], 
+            mode='lines',
+            line=dict(color='#667eea', width=4),
+            name='Trend Line',
+            hovertemplate='Trend: %{y:.3f}<extra></extra>'
+        ))
+        
+        fig.update_layout(
+            title="📈 Sentiment Evolution Over Time",
+            yaxis_title="Sentiment Polarity",
+            xaxis_title="Time",
+            height=400,
+            showlegend=True,
+            font=dict(size=12, color='white'),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            legend=dict(font=dict(color='white')),
+            xaxis=dict(color='white', gridcolor='#4A5568'),
+            yaxis=dict(color='white', gridcolor='#4A5568')
+        )
+        return fig
+
+    @staticmethod
+    def plot_engagement_metrics(df, meta):
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('📊 Comment Scores', '⏰ Activity Hours', '📝 Word Count Distribution', '😊 Emotion Frequency'),
+            specs=[[{"type": "bar"}, {"type": "bar"}], [{"type": "histogram"}, {"type": "bar"}]]
+        )
+        
+        # Comment scores
+        score_bins = pd.cut(df['score'], bins=5)
+        score_counts = score_bins.value_counts().sort_index()
+        fig.add_trace(
+            go.Bar(x=[str(x) for x in score_counts.index], y=score_counts.values, name="Scores", marker_color='#667eea'),
+            row=1, col=1
+        )
+        
+        # Activity hours
+        df['hour'] = df['timestamp'].dt.hour
+        hour_counts = df['hour'].value_counts().sort_index()
+        fig.add_trace(
+            go.Bar(x=hour_counts.index, y=hour_counts.values, name="Activity", marker_color='#4ECDC4'),
+            row=1, col=2
+        )
+        
+        # Word count distribution
+        fig.add_trace(
+            go.Histogram(x=df['word_count'], nbinsx=20, name="Word Count", marker_color='#FF6B6B'),
+            row=2, col=1
+        )
+        
+        # Emotion frequency
+        all_emotions = [e for sublist in df['emotions'] for e in sublist]
+        emotion_counts = Counter(all_emotions)
+        fig.add_trace(
+            go.Bar(x=list(emotion_counts.keys()), y=list(emotion_counts.values()), name="Emotions", marker_color='#FFD166'),
+            row=2, col=2
+        )
+        
+        fig.update_layout(
+            height=600, 
+            showlegend=False, 
+            title_text="📊 Comprehensive Engagement Analysis",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color='white')
+        )
+        
+        # Update subplot titles color
+        for annotation in fig['layout']['annotations']:
+            annotation['font'] = dict(color='white')
+            
         return fig
 
 # --- AUTHENTICATION COMPONENTS ---
@@ -651,17 +744,9 @@ def show_login_form():
             st.form_submit_button("🔄 Clear", use_container_width=True)
     
     if login_clicked:
-        if not AUTH_AVAILABLE:
-            # Demo Login Mode
-            st.session_state.authenticated = True
-            st.session_state.user = {"id": 1, "username": username or "DemoUser", "email": "demo@example.com"}
-            st.success("🎉 Logged in (Demo Mode)!")
-            st.rerun()
-            return
-
         if not username or not password:
             st.error("❌ Please enter both username and password")
-            return
+            return False
         
         try:
             db = user_db_manager.get_session()
@@ -675,13 +760,21 @@ def show_login_form():
                     "email": user.email,
                     "full_name": user.full_name
                 }
+                
                 st.success(f"🎉 Welcome back, {user.username}!")
+                st.balloons()
+                time.sleep(1)
                 st.rerun()
+                return True
             else:
                 st.error("❌ Invalid username or password")
+                return False
                 
         except Exception as e:
             st.error(f"❌ Login failed: {str(e)}")
+            return False
+    
+    return False
 
 def show_register_form():
     """Register form - Modern design"""
@@ -690,7 +783,7 @@ def show_register_form():
     with st.form("register_form_enhanced"):
         col1, col2 = st.columns(2)
         with col1:
-            username = st.text_input("👤 Username *", placeholder="Choose username")
+            username = st.text_input("👤 Username *", placeholder="Choose username (min 3 chars)")
             email = st.text_input("📧 Email *", placeholder="your.email@example.com")
         with col2:
             password = st.text_input("🔒 Password *", type="password", placeholder="Min 6 characters")
@@ -701,17 +794,25 @@ def show_register_form():
         register_clicked = st.form_submit_button("🚀 Create Account", use_container_width=True, type="primary")
     
     if register_clicked:
-        if not AUTH_AVAILABLE:
-            st.warning("⚠️ Registration is disabled in Demo Mode.")
-            return
-
         if not all([username, email, password, confirm_password]):
             st.error("❌ Please fill in all required fields")
-            return
+            return False
+            
+        if len(username) < 3:
+            st.error("❌ Username must be at least 3 characters")
+            return False
             
         if password != confirm_password:
             st.error("❌ Passwords do not match")
-            return
+            return False
+            
+        if len(password) < 6:
+            st.error("❌ Password must be at least 6 characters")
+            return False
+            
+        if "@" not in email:
+            st.error("❌ Please enter a valid email address")
+            return False
         
         try:
             db = user_db_manager.get_session()
@@ -722,10 +823,33 @@ def show_register_form():
                 password=password,
                 full_name=full_name.strip() if full_name else None
             )
-            st.success("🎉 Registration Successful! You can now login.")
             
+            st.markdown(f"""
+            <div class="success-message">
+                <h3>🎉 Registration Successful!</h3>
+                <p><strong>Username:</strong> {user.username}</p>
+                <p><strong>Email:</strong> {user.email}</p>
+                <p>💡 You can now login with your credentials</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.balloons()
+            return True
+            
+        except ValueError as e:
+            error_msg = str(e)
+            if "username" in error_msg.lower():
+                st.error(f"❌ Username '{username}' is already taken")
+            elif "email" in error_msg.lower():
+                st.error(f"❌ Email '{email}' is already registered")
+            else:
+                st.error(f"❌ {error_msg}")
+            return False
         except Exception as e:
             st.error(f"❌ Registration failed: {str(e)}")
+            return False
+    
+    return False
 
 def show_user_groups():
     """Display user's groups in sidebar with enhanced design"""
@@ -733,52 +857,62 @@ def show_user_groups():
         return
         
     try:
-        # Check if auth system is real or demo
-        if not AUTH_AVAILABLE:
-            st.markdown("### 📈 Your Tracked Groups (Demo)")
-            st.info("Groups are static in demo mode.")
-            return
-
         db = user_db_manager.get_session()
         user_service = UserService(db)
         current_user = st.session_state.user
         
+        if not hasattr(user_service, 'get_user_groups'):
+            st.info("👥 Group features coming soon!")
+            return
+            
         with st.sidebar.expander("📊 Your Groups", expanded=True):
             st.markdown("### 🎯 Manage Groups")
             
             # Add new group
-            with st.form("add_group_form"):
-                group_name = st.text_input("Group Name", placeholder="Tech News")
-                subreddit = st.text_input("Subreddit", placeholder="technology")
-                
-                if st.form_submit_button("➕ Add Group", use_container_width=True):
-                    if group_name and subreddit:
-                        try:
-                            user_service.add_user_group(
-                                user_id=current_user["id"],
-                                group_name=group_name,
-                                subreddit=subreddit.replace('r/', '').strip()
-                            )
-                            st.success(f"✅ Added '{group_name}'")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
-
+            if hasattr(user_service, 'add_user_group'):
+                with st.form("add_group_form"):
+                    group_name = st.text_input("Group Name", placeholder="Tech News", key="new_group_name")
+                    subreddit = st.text_input("Subreddit", placeholder="technology", key="new_subreddit")
+                    
+                    if st.form_submit_button("➕ Add Group", use_container_width=True):
+                        if group_name and subreddit:
+                            try:
+                                subreddit_clean = subreddit.replace('r/', '').strip()
+                                user_service.add_user_group(
+                                    user_id=current_user["id"],
+                                    group_name=group_name,
+                                    subreddit=subreddit_clean
+                                )
+                                st.success(f"✅ Added '{group_name}'")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error: {e}")
+                        else:
+                            st.error("⚠️ Please fill in all fields")
+            
             # Show current groups
-            st.markdown("---")
-            user_groups = user_service.get_user_groups(current_user["id"])
-            if user_groups:
-                for group in user_groups:
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.markdown(f"**{group.group_name}**\nr/{group.subreddit}")
-                    with col2:
-                        if st.button("🗑️", key=f"del_{group.id}"):
-                            user_service.remove_user_group(current_user["id"], group.id)
-                            st.rerun()
-            else:
-                st.info("🎯 No groups yet.")
-
+            if hasattr(user_service, 'get_user_groups'):
+                st.markdown("---")
+                st.markdown("### 📈 Your Tracked Groups")
+                user_groups = user_service.get_user_groups(current_user["id"])
+                if user_groups:
+                    for group in user_groups:
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.markdown(
+                                f"<div class='group-card'>"
+                                f"<strong>📊 {group.group_name}</strong><br>"
+                                f"<small>📍 r/{group.subreddit}</small>"
+                                f"</div>", 
+                                unsafe_allow_html=True
+                            )
+                        with col2:
+                            if hasattr(user_service, 'remove_user_group'):
+                                if st.button("🗑️", key=f"del_{group.id}"):
+                                    user_service.remove_user_group(current_user["id"], group.id)
+                                    st.rerun()
+                else:
+                    st.info("🎯 No groups yet. Add some to start tracking!")
     except Exception as e:
         st.error(f"Error loading groups: {e}")
 
@@ -807,23 +941,31 @@ def show_auth_section():
             st.markdown('<span class="feature-badge">⏳ Time Trends</span>', unsafe_allow_html=True)
         
     else:
-        # User is logged in
+        # User is logged in - Enhanced display
         user_info = st.session_state.user
         st.success(f"👋 Welcome back, **{user_info['username']}**!")
         
+        # Enhanced user info card
         st.markdown(f"""
         <div class='user-info-card'>
             <strong>👨‍💼 Account Information</strong><br>
-            📧 {user_info['email']}
+            📧 {user_info['email']}<br>
+            🆔 ID: {user_info['id']}
         </div>
         """, unsafe_allow_html=True)
         
-        if st.button("🚪 Logout", use_container_width=True, type="secondary"):
-            if AUTH_AVAILABLE: logout()
-            st.session_state.authenticated = False
-            st.session_state.user = None
-            st.rerun()
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("🔄 Refresh", use_container_width=True, key="refresh_btn"):
+                st.rerun()
+        with col2:
+            if st.button("🚪 Logout", use_container_width=True, type="secondary"):
+                logout()
+                st.session_state.authenticated = False
+                st.session_state.user = None
+                st.rerun()
         
+        # User features
         st.markdown("---")
         st.markdown("### 🛠️ Your Dashboard")
         show_user_groups()
@@ -831,90 +973,318 @@ def show_auth_section():
 # --- TRENDING CONTENT DISPLAY ---
 
 def show_trending_posts():
-    """Display trending posts from user's followed groups using RSS"""
+    """Display trending posts from user's followed groups"""
     if not st.session_state.authenticated:
         return
 
-    # Demo list if no DB connected
-    subreddits = ["technology", "programming", "python", "artificial"]
-    
-    if AUTH_AVAILABLE:
-        try:
-            db = user_db_manager.get_session()
-            user_service = UserService(db)
-            user_groups = user_service.get_user_groups(st.session_state.user["id"])
-            if user_groups:
-                subreddits = [g.subreddit for g in user_groups]
-        except:
-            pass
+    try:
+        db = user_db_manager.get_session()
+        user_service = UserService(db)
+        current_user = st.session_state.user
 
-    st.markdown("### 🔥 Trending from Your Groups (RSS)")
+        # Get user's groups
+        user_groups = user_service.get_user_groups(current_user["id"])
+        if not user_groups:
+            st.info("🌟 Add some groups in the sidebar to see trending posts!")
+            return
 
-    # Time filter (Simulated for RSS)
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col2:
-        st.selectbox("Time Range", ["day", "week"], index=0, key="trending_time_filter")
-    with col3:
-        limit = st.slider("Posts per group", 3, 10, 5, key="trending_limit")
+        subreddits = [group.subreddit for group in user_groups]
 
-    # Fetch trending posts
-    with st.spinner("🔄 Fetching trending posts..."):
-        trend_manager = TrendingPostsManager()
-        all_posts = trend_manager.fetch_multiple_subreddits(subreddits, limit_per_sub=limit)
+        st.markdown("### 🔥 Trending from Your Groups")
 
-    if not all_posts:
-        st.warning("❌ Could not fetch trending posts. Reddit might be slow.")
-        return
+        # Time filter
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            st.write("")  # Spacer
+        with col2:
+            time_filter = st.selectbox(
+                "Time Range",
+                ["day", "week", "month"],
+                index=0,
+                key="trending_time_filter"
+            )
+        with col3:
+            limit = st.slider("Posts per group", 3, 10, 5, key="trending_limit")
 
-    # Display posts by subreddit
-    for subreddit in subreddits:
-        sub_posts = [p for p in all_posts if p.get('subreddit') == subreddit]
-        if not sub_posts: continue
+        # Fetch trending posts
+        with st.spinner("🔄 Fetching trending posts..."):
+            trend_manager = TrendingPostsManager()
+            all_posts = trend_manager.fetch_multiple_subreddits(subreddits, limit_per_sub=limit)
 
-        with st.expander(f"📁 r/{subreddit}", expanded=True):
-            for post in sub_posts:
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    st.markdown(f"**{post['title']}**")
-                    st.markdown(f"👤 {post['author']} • [Link]({post['url']})")
-                
-                with col2:
-                    st.button(
-                        "🧠 Analyze", 
-                        key=f"analyze_{post['id']}", 
-                        use_container_width=True, 
-                        type="primary",
-                        on_click=analyze_post_callback,
-                        args=(post['url'],)
-                    )
-                st.markdown("---")
+        if not all_posts:
+            st.warning("❌ Could not fetch trending posts. Please check your internet connection.")
+            return
+
+        # Display posts by subreddit
+        for subreddit in subreddits:
+            sub_posts = [p for p in all_posts if p.get('subreddit') == subreddit]
+            if not sub_posts:
+                continue
+
+            with st.expander(f"📁 r/{subreddit} - {len(sub_posts)} trending posts", expanded=True):
+                for post in sub_posts:
+                    # Validate required keys
+                    required_keys = ['title', 'score', 'author', 'comments_count', 'created_utc', 'url']
+                    if not all(k in post for k in required_keys):
+                        st.warning(f"⚠️ Post missing data: {post}")
+                        continue
+
+                    # Compute time
+                    try:
+                        post_time = datetime.fromtimestamp(post['created_utc'])
+                        time_ago = datetime.now() - post_time
+                        days_ago = time_ago.days
+                        hours_ago = time_ago.seconds // 3600
+                    except Exception:
+                        days_ago, hours_ago = 0, 0
+
+                    # Create columns for layout
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        st.markdown(f"**{post['title']}**")
+                        st.markdown(f"👤 {post['author']} • 💬 {post['comments_count']} comments • ⬆️ {post['score']} • 🕒 {days_ago}d {hours_ago}h ago")
+                    
+                    with col2:
+                        # Create buttons for actions
+                        btn_col1, btn_col2 = st.columns(2)
+                        
+                        with btn_col1:
+                            if st.button("📖 Read", key=f"read_{post['id']}", use_container_width=True):
+                                # Open in new tab using JavaScript
+                                js = f"window.open('{post['url']}', '_blank');"
+                                components.html(f"<script>{js}</script>", height=0)
+                        
+                        with btn_col2:
+                            # --- MODIFIED: Switch tab logic with CALLBACK ---
+                            st.button(
+                                "🧠 Analyze", 
+                                key=f"analyze_{post['id']}", 
+                                use_container_width=True, 
+                                type="primary",
+                                on_click=analyze_post_callback,
+                                args=(post['url'],)
+                            )
+
+                    st.markdown("---")
+
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
 
 def show_trend_analysis():
     """Show trend analysis across all followed groups"""
     if not st.session_state.authenticated:
         return
     
-    st.markdown("### 📈 Community Trends Analysis")
-    st.info("Analysis based on RSS feeds from your groups.")
-    
-    # Simple stats for RSS data
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Total Communities", "4")
-    with col2:
-        st.metric("Active Threads Analyzed", "20")
+    try:
+        db = user_db_manager.get_session()
+        user_service = UserService(db)
+        current_user = st.session_state.user
+        
+        user_groups = user_service.get_user_groups(current_user["id"])
+        if not user_groups:
+            return
+        
+        subreddits = [group.subreddit for group in user_groups]
+        
+        st.markdown("### 📈 Community Trends Analysis")
+        
+        with st.spinner("🔍 Analyzing trends across your groups..."):
+            trend_manager = TrendingPostsManager()
+            all_posts = trend_manager.fetch_multiple_subreddits(subreddits, limit_per_sub=5)
+            trends = trend_manager.analyze_trends(all_posts)
+        
+        if not trends:
+            return
+        
+        # Display trend metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        total_posts = len(all_posts)
+        avg_score = sum(post['score'] for post in all_posts) / total_posts if total_posts > 0 else 0
+        avg_comments = sum(post['comments_count'] for post in all_posts) / total_posts if total_posts > 0 else 0
+        most_active_sub = max(trends.items(), key=lambda x: x[1]['count'])[0] if trends else "N/A"
+        
+        with col1:
+            st.metric("📊 Total Posts", total_posts)
+        with col2:
+            st.metric("⭐ Avg Score", f"{avg_score:.0f}")
+        with col3:
+            st.metric("💬 Avg Comments", f"{avg_comments:.0f}")
+        with col4:
+            st.metric("🏆 Most Active", f"r/{most_active_sub}")
+        
+        # Subreddit comparison
+        st.markdown("#### 📊 Subreddit Performance")
+        
+        subreddit_data = []
+        for sub, stats in trends.items():
+            subreddit_data.append({
+                'Subreddit': f"r/{sub}",
+                'Posts': stats['count'],
+                'Avg Score': stats['avg_score'],
+                'Avg Comments': stats['avg_comments'],
+                'Total Engagement': stats['total_score'] + stats['total_comments']
+            })
+        
+        if subreddit_data:
+            df_subs = pd.DataFrame(subreddit_data)
+            
+            # Create comparison charts
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                fig_score = px.bar(
+                    df_subs, 
+                    x='Subreddit', 
+                    y='Avg Score',
+                    title='📈 Average Score by Subreddit',
+                    color='Avg Score',
+                    color_continuous_scale='viridis'
+                )
+                fig_score.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font_color='white'
+                )
+                st.plotly_chart(fig_score, use_container_width=True)
+            
+            with col2:
+                fig_engagement = px.pie(
+                    df_subs,
+                    values='Total Engagement',
+                    names='Subreddit',
+                    title='🎯 Engagement Distribution'
+                )
+                fig_engagement.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font_color='white'
+                )
+                st.plotly_chart(fig_engagement, use_container_width=True)
+        
+        # Top performing posts
+        st.markdown("#### 🏆 Top Performing Posts")
+        
+        top_posts = sorted(all_posts, key=lambda x: x['score'], reverse=True)[:5]
+        
+        for i, post in enumerate(top_posts, 1):
+            emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i-1]
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.markdown(f"""
+                <div class="trend-card">
+                    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 1.2em; margin-right: 10px;">{emoji}</span>
+                        <strong style="color: #E2E8F0;">{post['title'][:80]}...</strong>
+                    </div>
+                    <div style="color: #CBD5E0; font-size: 0.9em;">
+                        <span>r/{post['subreddit']}</span> • 
+                        <span>👤 {post['author']}</span> • 
+                        <span>⭐ {post['score']} points</span> • 
+                        <span>💬 {post['comments_count']} comments</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("📖", key=f"top_read_{post['id']}", use_container_width=True):
+                        js = f"window.open('{post['url']}', '_blank');"
+                        components.html(f"<script>{js}</script>", height=0)
+                with btn_col2:
+                    st.button(
+                        "🧠", 
+                        key=f"top_analyze_{post['id']}", 
+                        use_container_width=True, 
+                        type="primary",
+                        on_click=analyze_post_callback,
+                        args=(post['url'],)
+                    )
+            
+    except Exception as e:
+        st.error(f"Error analyzing trends: {e}")
 
 def show_welcome_page():
     """Enhanced welcome page for unauthenticated users"""
     st.markdown("""
     <div class="welcome-container">
         <h1 style="font-size: 3em; margin-bottom: 20px;">🧠 Reddit Analytics Pro</h1>
-        <p style="font-size: 1.3em; opacity: 0.95;">Advanced NLP • Emotional Intelligence • Temporal Trends</p>
+        <p style="font-size: 1.3em; opacity: 0.95;">Advanced NLP • Emotional Intelligence • Temporal Trends • Professional Insights</p>
+        <div style="margin-top: 30px;">
+            <span class="feature-badge">🤖 AI-Powered</span>
+            <span class="feature-badge">📈 Real-Time</span>
+            <span class="feature-badge">🔒 Secure</span>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
-    st.info("👋 Please Login in the sidebar to access the dashboard.")
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.markdown("""
+        ## 🚀 Next-Generation Reddit Analytics
+        
+        **Unlock powerful insights from Reddit discussions with our advanced AI platform:**
+        
+        ### 🧠 Intelligent Analysis
+        - **Sentiment Analysis**: Deep understanding of discussion moods and tones
+        - **Emotion Detection**: AI-powered emotion classification across 6 core emotions
+        - **Behavioral Patterns**: Identify user engagement patterns and trends
+        
+        ### 📊 Advanced Visualization
+        - **Interactive Dashboards**: Real-time, responsive charts and graphs
+        - **Temporal Analysis**: Track sentiment evolution with precision
+        - **Comparative Analytics**: Compare multiple threads and time periods
+        
+        ### 🎯 Professional Applications
+        - **Market Research**: Understand customer opinions and feedback
+        - **Brand Monitoring**: Track brand sentiment across communities
+        - **Community Management**: Identify key influencers and pain points
+        """)
+    
+    with col2:
+        st.markdown("""
+        ### 🔐 Get Started
+        
+        **Unlock all features:**
+        
+        1. **Create Account** - Quick registration
+        2. **Login** - Access your dashboard
+        3. **Analyze** - Start gaining insights
+        
+        ### 💡 Pro Features
+        
+        🎯 Smart Filtering  
+        💾 Data Export  
+        📱 Mobile Optimized  
+        🔄 Real-Time Updates  
+        📈 Professional Reports
+        """)
+        
+        st.info("""
+        💫 **Premium Analytics**
+        - Advanced NLP processing
+        - Emotional intelligence
+        - Professional reporting
+        - Export capabilities
+        """)
+
+    with col3:
+        st.markdown("""
+        ### 🏆 Why Choose Us?
+        
+        ⭐ **Accuracy** Advanced algorithms for precise sentiment analysis
+        
+        ⭐ **Speed** Real-time processing of large datasets
+        
+        ⭐ **Depth** Multi-dimensional analysis beyond basic sentiment
+        
+        ⭐ **Usability** Intuitive interface for all skill levels
+        """)
 
 # --- SINGLE ANALYSIS FUNCTIONALITY ---
 
@@ -923,11 +1293,13 @@ def perform_analysis(url):
     loader = RedditLoader()
     nlp = EnhancedNLPEngine()
     viz = EnhancedVizEngine()
+    
+    # Initialize summarizer
     ai_summarizer = AISummarizer()
     
     with st.status("🔍 Analyzing...", expanded=True) as status:
         # Fetch data
-        status.update(label="🔄 Fetching data from Reddit (RSS Mode)...")
+        status.update(label="🔄 Fetching data from Reddit...")
         raw_data = loader.fetch(url)
         if not raw_data['success']:
             status.update(label="❌ Failed", state="error")
@@ -938,16 +1310,17 @@ def perform_analysis(url):
         status.update(label=f"🧠 Analyzing {len(raw_data['comments'])} comments...")
         processed_comments = nlp.process_batch(raw_data['comments'])
         df = pd.DataFrame(processed_comments)
+        df = df[df['word_count'] >= 3]  # Filter short comments
         
-        # Lọc comment quá ngắn
-        if not df.empty:
-            df = df[df['word_count'] >= 2]
+        # --- NEW: GENERATE SUMMARY WITH GEMINI ---
+        status.update(label="🤖 Generating AI Summary... (Using Gemini 1.5 Flash)")
         
-        # Generate Summary with FALLBACK
-        status.update(label="🤖 Generating AI Summary...")
+        # Get selftext from meta (safely)
+        post_body = raw_data['meta'].get('selftext', '')
+        
         summary_text = ai_summarizer.generate_summary(
             title=raw_data['meta']['title'],
-            body=raw_data['meta']['selftext'],
+            body=post_body,
             top_comments=raw_data['comments']
         )
         
@@ -955,7 +1328,7 @@ def perform_analysis(url):
         st.session_state.current_analysis = {
             'df': df, 
             'meta': raw_data['meta'],
-            'summary': summary_text,
+            'summary': summary_text,  # Stored summary
             'processed_at': datetime.now()
         }
         
@@ -963,123 +1336,192 @@ def perform_analysis(url):
         hist_entry = {
             'id': str(time.time()), 
             'url': url, 
-            'title': raw_data['meta']['title'][:50],
+            'title': raw_data['meta']['title'][:50] + "...",
             'sub': raw_data['meta']['subreddit'],
             'comments': len(df),
             'timestamp': datetime.now()
         }
-        st.session_state.history.append(hist_entry)
+        if not any(h['url'] == url for h in st.session_state.history):
+            st.session_state.history.append(hist_entry)
         
         status.update(label=f"✅ Analyzed {len(df)} comments", state="complete")
 
     # Display Results
-    data = st.session_state.current_analysis
-    meta = data['meta']
-    df = data['df']
-    summary = data['summary']
+    meta = raw_data['meta']
+    df = st.session_state.current_analysis['df']
+    summary = st.session_state.current_analysis.get('summary', 'No summary available')
     
-    # Header
-    st.markdown(f"### 📄 {meta['title']}")
-    st.caption(f"Subreddit: r/{meta['subreddit']} | Author: {meta['author']}")
+    # KPIs
+    st.markdown("### 🏆 Executive Summary")
+    k1, k2, k3, k4 = st.columns(4)
+    
+    with k1:
+        st.metric("Total Engagement", f"{meta['score']:,}")
+    with k2:
+        st.metric("Comments Analyzed", f"{len(df):,}")
+    with k3:
+        avg_pol = df['polarity'].mean()
+        sentiment = "😊 Positive" if avg_pol > 0.1 else "😟 Negative" if avg_pol < -0.1 else "😐 Neutral"
+        st.metric("Avg Sentiment", f"{avg_pol:.3f}", delta=sentiment)
+    with k4:
+        st.metric("Avg Words", f"{df['word_count'].mean():.0f}")
 
-    # Tabs
+    # Analysis Tabs - Added "Summary" Tab
     tab_summary, tab1, tab2, tab3 = st.tabs(["📝 Summary", "📊 Overview", "🧠 Emotions", "🔬 Comments"])
     
     with tab_summary:
-        st.markdown("### 🤖 AI Executive Summary")
-        st.markdown(f"<div class='comment-card'>{summary}</div>", unsafe_allow_html=True)
+        st.markdown("### 🤖 AI Executive Summary (Powered by Gemini)")
+        st.info("Bản tóm tắt này được tạo tự động bởi AI dựa trên tiêu đề, nội dung bài viết và các bình luận hàng đầu.")
+        
+        st.markdown(f"""
+        <div style="background-color: #2D3748; padding: 20px; border-radius: 10px; border-left: 5px solid #667eea; color: #E2E8F0; font-size: 1.1em; line-height: 1.6;">
+            {summary}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("#### 📌 Key Details")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            st.markdown(f"**Title:** {meta['title']}")
+            st.markdown(f"**Author:** {meta['author']}")
+        with col_s2:
+            st.markdown(f"**Subreddit:** r/{meta['subreddit']}")
+            st.markdown(f"**Posted:** {meta['created']}")
     
     with tab1:
         col1, col2 = st.columns(2)
         with col1:
             st.plotly_chart(viz.plot_sentiment_distribution(df), use_container_width=True)
         with col2:
-            st.plotly_chart(viz.plot_sentiment_timeline(df), use_container_width=True)
+            timeline_fig = viz.plot_sentiment_timeline(df)
+            if timeline_fig:
+                st.plotly_chart(timeline_fig, use_container_width=True)
     
     with tab2:
-        st.plotly_chart(viz.plot_emotion_radar(df), use_container_width=True)
+        radar_fig = viz.plot_emotion_radar(df)
+        if radar_fig:
+            st.plotly_chart(radar_fig, use_container_width=True)
+        
+        # Emotion statistics
+        st.markdown("#### Emotion Frequency")
+        all_emotions = [e for sublist in df['emotions'] for e in sublist]
+        emotion_counts = Counter(all_emotions)
+        
+        if emotion_counts:
+            cols = st.columns(len(emotion_counts))
+            for idx, (emotion, count) in enumerate(emotion_counts.most_common()):
+                with cols[idx]:
+                    percentage = (count / len(df)) * 100
+                    st.metric(f"{emotion}", f"{count}", f"{percentage:.1f}%")
     
     with tab3:
-        st.dataframe(df)
+        # Simple comment viewer
+        for idx, row in df.head(10).iterrows():
+            sentiment_color = {
+                'Positive': '#00D4AA',
+                'Slightly Positive': '#4AE8C5', 
+                'Neutral': '#FFD166',
+                'Slightly Negative': '#FF9E64',
+                'Negative': '#FF6B6B'
+            }.get(row['sentiment'], '#888')
+            
+            st.markdown(f"""
+            <div class="comment-card" style="border-left-color: {sentiment_color}">
+                <div style="display: flex; justify-content: space-between;">
+                    <b>👤 {row['author']}</b>
+                    <span>⬆️ {row['score']} • {row['sentiment_emoji']} {row['sentiment']}</span>
+                </div>
+                <div style="margin: 10px 0; color: #666;">
+                    Emotions: {', '.join(row['emotions'])} • Words: {row['word_count']} • Polarity: {row['polarity']:.3f}
+                </div>
+                <div>{row['body'][:200]}...</div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    return df
 
 def show_single_analysis():
     """Single URL analysis functionality"""
     st.markdown("### 🔗 Analyze Reddit Thread")
     
     # Check if we have a URL from trending posts analysis
-    if st.session_state.get('trending_analysis_triggered'):
+    if (st.session_state.get('trending_analysis_triggered') and 
+        st.session_state.get('trending_analysis_url')):
+        
         url = st.session_state.trending_analysis_url
+        
+        # Reset the trigger so it doesn't loop
         st.session_state.trending_analysis_triggered = False
+        st.session_state.trending_analysis_url = None
+        
+        # Update current URL input logic
         st.session_state.url = url
+        st.session_state.single_analysis_url = url
+        
+        # Perform analysis immediately
+        st.info(f"🔍 Analyzing trending post: {url}")
         perform_analysis(url)
         return
     
     # Normal URL input
-    url = st.text_input("🔗 Reddit Thread URL", key="single_analysis_url", placeholder="https://www.reddit.com/r/...")
+    url = st.session_state.get('url', '')
     
-    if st.button("🚀 ANALYZE", type="primary"):
-        if url:
-            st.session_state.url = url
-            perform_analysis(url)
-    
-    elif st.session_state.get('current_analysis'):
-        # Re-render results if already exists
-        data = st.session_state.current_analysis
-        meta = data['meta']
-        df = data['df']
-        summary = data['summary']
-        viz = EnhancedVizEngine()
-        
-        st.markdown(f"### 📄 {meta['title']}")
-        st.caption(f"Subreddit: r/{meta['subreddit']} | Author: {meta['author']}")
+    # URL Input
+    col_in, col_btn = st.columns([5, 1])
+    with col_in:
+        url = st.text_input(
+            "🔗 Reddit Thread URL", 
+            value=url,
+            placeholder="https://www.reddit.com/r/...",
+            help="Paste any Reddit thread URL",
+            key="single_analysis_url"
+        )
+    with col_btn:
+        st.write("<br>", unsafe_allow_html=True)
+        analyze_btn = st.button("🚀 ANALYZE", type="primary", use_container_width=True, key="single_analysis_btn")
 
-        tab_summary, tab1, tab2, tab3 = st.tabs(["📝 Summary", "📊 Overview", "🧠 Emotions", "🔬 Comments"])
-        
-        with tab_summary:
-            st.markdown("### 🤖 AI Executive Summary")
-            st.markdown(f"<div class='comment-card'>{summary}</div>", unsafe_allow_html=True)
-        
-        with tab1:
-            col1, col2 = st.columns(2)
-            with col1: st.plotly_chart(viz.plot_sentiment_distribution(df), use_container_width=True)
-            with col2: st.plotly_chart(viz.plot_sentiment_timeline(df), use_container_width=True)
-        
-        with tab2:
-            st.plotly_chart(viz.plot_emotion_radar(df), use_container_width=True)
-        
-        with tab3:
-            st.dataframe(df)
+    # REMOVED QUICK DEMOS AS REQUESTED
 
-def show_dashboard():
-    """Main dashboard view"""
-    st.markdown("### 📊 Quick Access")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.button("🔥 Trending Posts", use_container_width=True, on_click=switch_tab, args=("🔥 Trending Posts",))
-    with col2:
-        st.button("📈 Analyze Trends", use_container_width=True, on_click=switch_tab, args=("📈 Trend Analysis",))
-    with col3:
-        st.button("🔗 Single Analysis", use_container_width=True, on_click=switch_tab, args=("🔗 Single Analysis",))
-    
-    st.markdown("### 📈 Recent Activity")
-    if st.session_state.history:
-        for hist in reversed(st.session_state.history[-3:]):
-            st.info(f"{hist['timestamp'].strftime('%H:%M')} - {hist['title']}")
-    else:
-        st.info("No analysis history yet.")
+    # Analysis Processing
+    if analyze_btn and url:
+        st.session_state.url = url
+        perform_analysis(url)
 
-# --- MAIN APP ---
+    # Empty state for authenticated users
+    elif not analyze_btn and not st.session_state.get('current_analysis'):
+        st.markdown("---")
+        st.markdown("""
+        ## 🚀 Ready to Analyze Reddit Threads
+        
+        **Paste a Reddit URL above to get started with:**
+        
+        - 🧠 **Sentiment Analysis** - Understand discussion moods
+        - 😊 **Emotion Detection** - Identify specific emotions  
+        - 📊 **Visual Analytics** - Interactive charts & insights
+        - ⏳ **Temporal Trends** - See how sentiment evolves
+        
+        ### 💡 Pro Tips
+        - Add groups in sidebar for personalized tracking
+        - Export analysis for reports
+        """)
+
+# --- ENHANCED MAIN APP ---
 
 def main():
     # Initialize session state
-    if "authenticated" not in st.session_state: st.session_state.authenticated = False
-    if "user" not in st.session_state: st.session_state.user = None
-    if "history" not in st.session_state: st.session_state.history = []
-    if "current_analysis" not in st.session_state: st.session_state.current_analysis = None
-    if "trending_analysis_triggered" not in st.session_state: st.session_state.trending_analysis_triggered = False
-    if "active_tab" not in st.session_state: st.session_state.active_tab = "🏠 Dashboard"
-
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if "user" not in st.session_state:
+        st.session_state.user = None
+    if "history" not in st.session_state:
+        st.session_state.history = []
+    if "current_analysis" not in st.session_state:
+        st.session_state.current_analysis = None
+    if "trending_analysis_triggered" not in st.session_state:
+        st.session_state.trending_analysis_triggered = False
+    if "trending_analysis_url" not in st.session_state:
+        st.session_state.trending_analysis_url = None
+    
     # NAVIGATION OPTIONS
     NAV_DASHBOARD = "🏠 Dashboard"
     NAV_TRENDING = "🔥 Trending Posts"
@@ -1087,49 +1529,138 @@ def main():
     NAV_SINGLE = "🔗 Single Analysis"
     NAV_OPTIONS = [NAV_DASHBOARD, NAV_TRENDING, NAV_ANALYSIS, NAV_SINGLE]
 
-    # --- SIDEBAR ---
+    # Initialize Active Tab
+    if "active_tab" not in st.session_state:
+        st.session_state.active_tab = NAV_DASHBOARD
+
+    # --- ENHANCED SIDEBAR ---
     with st.sidebar:
-        st.title("Reddit AI Tool")
-        show_auth_section()
+        st.markdown("""
+        <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: white;">⚙️ Control Panel</h1>
+            <p style="opacity: 0.7; color: white;">Advanced Analytics Dashboard</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if AUTH_AVAILABLE:
+            show_auth_section()
+        else:
+            st.warning("🔒 Authentication unavailable")
 
     # --- MAIN CONTENT ---
     if not st.session_state.authenticated:
         show_welcome_page()
         return
 
-    # Authenticated UI
+    # Authenticated user content - Enhanced design
     st.markdown("""
     <div class="main-header">
         <h1>🧠 Reddit Analytics Pro</h1>
-        <p>RSS-Powered • AI Enhanced • Secure</p>
+        <p>Advanced NLP • Emotional Intelligence • Professional Insights • Real-Time Analytics</p>
     </div>
     """, unsafe_allow_html=True)
 
-    # Navigation Tabs
+    # Enhanced user welcome
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.success(f"✅ **Welcome, {st.session_state.user['username']}!** All premium features unlocked! 🚀")
+    with col2:
+        if st.button("🔄 Refresh Dashboard", use_container_width=True):
+            st.rerun()
+
+    # Enhanced user groups display
+    if AUTH_AVAILABLE and st.session_state.authenticated:
+        try:
+            db = user_db_manager.get_session()
+            user_service = UserService(db)
+            user_groups = user_service.get_user_groups(st.session_state.user["id"])
+            if user_groups:
+                st.markdown("### 🎯 Your Tracked Communities")
+                cols = st.columns(min(4, len(user_groups)))
+                for i, group in enumerate(user_groups[:4]):
+                    with cols[i]:
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <h3>r/{group.subreddit}</h3>
+                            <p>{group.group_name}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Error loading groups: {e}")
+
+    # Main Navigation Tabs (Replaced st.tabs with st.radio for programmatic control)
+    # Using 'label_visibility="collapsed"' to hide the label "Navigation"
     selected_nav = st.radio(
         "Navigation", 
         NAV_OPTIONS,
-        index=NAV_OPTIONS.index(st.session_state.active_tab) if st.session_state.active_tab in NAV_OPTIONS else 0,
         horizontal=True,
         label_visibility="collapsed",
-        key="nav_radio"
+        key="active_tab"
     )
-    
-    # Sync radio with state if changed manually
-    if selected_nav != st.session_state.active_tab:
-        st.session_state.active_tab = selected_nav
-        st.rerun()
 
     st.markdown("---")
 
-    if st.session_state.active_tab == NAV_DASHBOARD:
+    if selected_nav == NAV_DASHBOARD:
         show_dashboard()
-    elif st.session_state.active_tab == NAV_TRENDING:
+    
+    elif selected_nav == NAV_TRENDING:
         show_trending_posts()
-    elif st.session_state.active_tab == NAV_ANALYSIS:
+    
+    elif selected_nav == NAV_ANALYSIS:
         show_trend_analysis()
-    elif st.session_state.active_tab == NAV_SINGLE:
+    
+    elif selected_nav == NAV_SINGLE:
         show_single_analysis()
+
+def show_dashboard():
+    """Main dashboard view"""
+    st.markdown("### 📊 Quick Access")
+    
+    # Quick actions with proper navigation
+    col1, col2, col3 = st.columns(3)
+    
+    # --- MODIFIED: USE CALLBACKS TO AVOID SESSION STATE ERROR ---
+    with col1:
+        st.button(
+            "🔥 View Trending Posts", 
+            use_container_width=True, 
+            key="dashboard_trending",
+            on_click=switch_tab,
+            args=("🔥 Trending Posts",)
+        )
+    
+    with col2:
+        st.button(
+            "📈 Analyze Trends", 
+            use_container_width=True, 
+            key="dashboard_trends",
+            on_click=switch_tab,
+            args=("📈 Trend Analysis",)
+        )
+    
+    with col3:
+        st.button(
+            "🔍 Single Analysis", 
+            use_container_width=True, 
+            key="dashboard_single",
+            on_click=switch_tab,
+            args=("🔗 Single Analysis",)
+        )
+    
+    # Recent activity or quick stats
+    st.markdown("### 📈 Recent Activity")
+    
+    if st.session_state.history:
+        st.markdown("#### 📋 Analysis History")
+        for hist in st.session_state.history[-3:]:  # Show last 3 analyses
+            st.markdown(f"""
+            <div class="trend-card">
+                <strong>{hist['title']}</strong><br>
+                <small>r/{hist['sub']} • {hist['comments']} comments • {hist['timestamp'].strftime('%Y-%m-%d %H:%M')}</small>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("No analysis history yet. Start by analyzing a Reddit thread!")
 
 if __name__ == "__main__":
     main()
