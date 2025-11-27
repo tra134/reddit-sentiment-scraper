@@ -375,7 +375,6 @@ class TrendingPostsManager:
         for subreddit in subreddits:
             posts = self.fetch_trending_posts(subreddit, limit=limit_per_sub)
             all_posts.extend(posts)
-            # RSS requests are safer, no sleep needed usually
         return all_posts
     
     def analyze_trends(self, posts):
@@ -400,17 +399,16 @@ class TrendingPostsManager:
         
         return subreddit_stats
 
-# --- AI SUMMARIZER CLASS (GEMINI 1.5 FLASH) ---
+# --- AI SUMMARIZER CLASS (GEMINI FALLBACK LOGIC) ---
+# FIX LỖI 404 MODEL
 
 class AISummarizer:
     def __init__(self):
-        self.model = None
         self.api_key = GOOGLE_GEMINI_API_KEY
-        
+        # Cấu hình API nếu có key
         if GEMINI_AVAILABLE and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
                 print(f"Lỗi cấu hình Gemini: {e}")
 
@@ -418,7 +416,7 @@ class AISummarizer:
         if not GEMINI_AVAILABLE:
             return "⚠️ Chưa cài thư viện `google-generativeai`. Chạy `pip install google-generativeai`."
         
-        if not self.model:
+        if not self.api_key:
             return "⚠️ Chưa cấu hình API Key. Vui lòng kiểm tra `.streamlit/secrets.toml`."
 
         comments_text = ""
@@ -440,11 +438,21 @@ class AISummarizer:
         3. **Cảm xúc chủ đạo:** Tích cực / Tiêu cực / Trung lập.
         """
 
+        # CƠ CHẾ FALLBACK MODEL THÔNG MINH
         try:
-            response = self.model.generate_content(prompt)
+            # Ưu tiên thử model Flash (Nhanh & Rẻ)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
             return response.text
         except Exception as e:
-            return f"Lỗi khi gọi Gemini API: {str(e)}"
+            # Nếu lỗi (ví dụ: 404 Model not found), chuyển sang Gemini Pro (Ổn định)
+            print(f"Flash model error: {e}, switching to Pro...")
+            try:
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e2:
+                return f"Lỗi khi gọi AI (Đã thử cả Flash và Pro): {str(e2)}"
 
 # --- NLP ENGINE ---
 
@@ -935,7 +943,7 @@ def perform_analysis(url):
         if not df.empty:
             df = df[df['word_count'] >= 2]
         
-        # Generate Summary
+        # Generate Summary with FALLBACK
         status.update(label="🤖 Generating AI Summary...")
         summary_text = ai_summarizer.generate_summary(
             title=raw_data['meta']['title'],
@@ -1016,16 +1024,7 @@ def show_single_analysis():
     
     elif st.session_state.get('current_analysis'):
         # Re-render results if already exists
-        # We need to pass the URL stored in history or session to redraw
-        # For simplicity, we assume the user wants to see the last analysis result
-        # Just call display logic directly
         data = st.session_state.current_analysis
-        
-        # Re-draw Tabs (Copy paste of logic inside perform_analysis for re-rendering)
-        # Or better: Just re-run perform_analysis with the same data? 
-        # Since streamlit re-runs the whole script, we just need to render the UI parts.
-        
-        # --- RENDER UI FROM STATE ---
         meta = data['meta']
         df = data['df']
         summary = data['summary']
