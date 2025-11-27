@@ -27,3 +27,5 @@ google-generativeai>=0.7.0
 
 # --- SCRAPING ---
 beautifulsoup4
+
+feedparser
