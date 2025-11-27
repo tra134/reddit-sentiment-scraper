@@ -1,0 +1,29 @@
+# --- CORE FRAMEWORK ---
+streamlit==1.28.0
+pandas==1.5.3
+numpy==1.24.0
+requests==2.31.0
+python-dotenv==1.0.0
+tqdm==4.65.0
+
+# --- DATABASE & AUTH ---
+sqlalchemy==2.0.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# --- VISUALIZATION ---
+plotly==5.15.0
+matplotlib>=3.7.0
+seaborn>=0.12.2
+wordcloud==1.9.3
+
+# --- NLP & AI (Lightweight) ---
+# Dùng các thư viện này thay cho Transformers/Torch để tránh sập RAM
+textblob==0.17.1
+vaderSentiment==3.3.2
+scikit-learn>=1.3.0
+google-generativeai>=0.7.0
+
+# --- SCRAPING ---
+beautifulsoup4==4.12.0

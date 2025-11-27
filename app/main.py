@@ -398,7 +398,7 @@ class RedditLoader:
         except Exception as e:
             return {'success': False, 'error': f'Connection error: {str(e)}'}
 
-# --- AI SUMMARIZER CLASS (GEMINI 1.5 FLASH) ---
+# --- AI SUMMARIZER CLASS (GEMINI 2.0 FLASH) ---
 
 class AISummarizer:
     def __init__(self):
