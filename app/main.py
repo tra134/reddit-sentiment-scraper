@@ -261,7 +261,7 @@ class TrendingPostsManager:
                 "Accept-Language": "en-US,en;q=0.9",
                 "Referer": "https://www.google.com/"
             }
-            url = f"https://www.reddit.com/r/{subreddit}/top/.json?limit={limit}&t={time_filter}"
+            url = f"https://old.reddit.com/r/{subreddit}/top/.json?limit={limit}&t={time_filter}"
             response = self.session.get(url,headers=headers, timeout=10)
             
             if response.status_code == 200:
