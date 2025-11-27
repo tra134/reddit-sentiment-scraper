@@ -256,8 +256,13 @@ class TrendingPostsManager:
     def fetch_trending_posts(self, subreddit, limit=10, time_filter='day'):
         """Fetch trending posts from a subreddit"""
         try:
+            headers ={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.google.com/"
+            }
             url = f"https://www.reddit.com/r/{subreddit}/top/.json?limit={limit}&t={time_filter}"
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(url,headers=headers, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
