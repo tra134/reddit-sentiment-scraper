@@ -15,7 +15,7 @@ import os
 import textwrap
 import streamlit.components.v1 as components
 import html
-import feedparser  # THƯ VIỆN RSS (DỰ PHÒNG CUỐI CÙNG)
+import feedparser  # QUAN TRỌNG: Dùng thư viện này để lách luật
 
 # --- CẤU HÌNH API KEY ---
 try:
@@ -38,7 +38,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-# Import Auth (Safe Mode)
+# Import Auth
 try:
     from core.user_database import user_db_manager
     from core.auth import authenticate_user, logout
@@ -50,7 +50,7 @@ except ImportError:
 # --- PAGE CONFIG ---
 st.set_page_config(
     page_title="Reddit Analytics Pro",
-    page_icon="🛡️",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -58,13 +58,13 @@ st.set_page_config(
 # --- CSS ---
 st.markdown("""
 <style>
-    .main-header { background: linear-gradient(135deg, #43cea2 0%, #185a9d 100%); padding: 30px; border-radius: 15px; color: white; text-align: center; margin-bottom: 20px; font-weight: bold;}
+    .main-header { background: linear-gradient(135deg, #FF416C 0%, #FF4B2B 100%); padding: 30px; border-radius: 15px; color: white; text-align: center; margin-bottom: 20px; font-weight: bold;}
     .metric-card { background: #262730; padding: 15px; border-radius: 10px; border: 1px solid #4A5568; text-align: center; }
-    .comment-card { background: #262730; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 5px solid #43cea2; color: #E0E0E0; }
+    .comment-card { background: #262730; padding: 15px; border-radius: 10px; margin: 10px 0; border-left: 5px solid #FF416C; color: #E0E0E0; }
     .stButton button { width: 100%; border-radius: 8px; font-weight: bold; }
     div.row-widget.stRadio > div { flex-direction: row; align-items: stretch; }
     div.row-widget.stRadio > div[role="radiogroup"] > label { background: #262730; border: 1px solid #4A5568; padding: 10px; flex: 1; text-align: center; border-radius: 8px; margin: 0 5px; }
-    div.row-widget.stRadio > div[role="radiogroup"] > label[data-checked="true"] { background: #43cea2; border-color: #43cea2; color: black; }
+    div.row-widget.stRadio > div[role="radiogroup"] > label[data-checked="true"] { background: #FF416C; border-color: #FF416C; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,20 +77,10 @@ def analyze_post_callback(url):
     st.session_state.trending_analysis_triggered = True
     st.session_state.active_tab = "🔗 Single Analysis"
 
-# --- CORE 1: HYBRID LOADER (MIRROR JSON -> RSS FALLBACK) ---
-# Class này cực kỳ quan trọng để chạy được trên Cloud
+# --- CORE 1: REDDIT LOADER (ANTI-BLOCK RSS) ---
 class RedditLoader:
     def __init__(self):
-        # Danh sách Mirror (Bản sao Reddit - Không chặn IP Cloud)
-        self.mirrors = [
-            "https://r.fxy.net",            # Mirror 1 (Khuyên dùng)
-            "https://l.opnxng.com",         # Mirror 2
-            "https://snoo.habedieeh.re",    # Mirror 3
-            "https://www.reddit.com"        # Chính chủ (Để cuối cùng vì dễ bị chặn trên Cloud)
-        ]
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
+        self.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
     def clean_html(self, raw_html):
         if not raw_html: return ""
@@ -98,148 +88,90 @@ class RedditLoader:
         return re.sub(cleanr, '', raw_html).strip()
 
     def fetch(self, url):
-        # 1. Xác định Path
+        clean_url = url.split('?')[0].rstrip('/')
+        if not clean_url.endswith('.rss'): clean_url += '.rss'
+
         try:
-            if "reddit.com" in url:
-                path = url.split("reddit.com")[1].split('?')[0]
-            elif "redd.it" in url:
-                return {'success': False, 'error': 'Vui lòng dùng link đầy đủ.'}
-            elif url.startswith("http"):
-                path = "/" + "/".join(url.split("/")[3:])
-            else:
-                path = url # Giả sử user nhập path
-            
-            path = path.rstrip('/')
-        except:
-            return {'success': False, 'error': 'Link không hợp lệ.'}
-
-        last_error = ""
-
-        # 2. CHIẾN THUẬT 1: Thử tải JSON từ các Mirror (Ưu tiên vì đủ dữ liệu)
-        for domain in self.mirrors:
-            target_url = f"{domain}{path}.json"
-            try:
-                response = requests.get(target_url, headers=self.headers, timeout=8)
+            with st.spinner('📡 Đang kết nối RSS...'):
+                # Dùng requests tải trước để vượt qua tường lửa cơ bản
+                response = requests.get(clean_url, headers=self.headers, timeout=10)
+                if response.status_code != 200: return {'success': False, 'error': f'Lỗi HTTP {response.status_code}'}
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    # Parse JSON chuẩn Reddit
-                    if isinstance(data, list) and len(data) >= 2:
-                        post_data = data[0]['data']['children'][0]['data']
-                        comments_data = data[1]['data']['children']
-                        
-                        comments = []
-                        for c in comments_data:
-                            if 'data' in c and 'body' in c['data']:
-                                d = c['data']
-                                ts = d.get('created_utc', time.time())
-                                comments.append({
-                                    'body': d.get('body', ''),
-                                    'author': d.get('author', 'Unknown'),
-                                    'score': d.get('score', 0),
-                                    'created_utc': ts,
-                                    'timestamp': datetime.fromtimestamp(ts),
-                                    'permalink': f"https://www.reddit.com{d.get('permalink','')}"
-                                })
-                        
-                        return {
-                            'success': True,
-                            'meta': {
-                                'title': post_data.get('title'),
-                                'subreddit': post_data.get('subreddit'),
-                                'score': post_data.get('score', 0),
-                                'num_comments': post_data.get('num_comments', 0),
-                                'author': post_data.get('author'),
-                                'created': datetime.fromtimestamp(post_data.get('created_utc')),
-                                'url': f"https://www.reddit.com{post_data.get('permalink')}",
-                                'selftext': post_data.get('selftext', '')
-                            },
-                            'comments': comments
-                        }
-            except Exception as e:
-                last_error = str(e)
-                continue # Thử mirror tiếp theo
-        
-        # 3. CHIẾN THUẬT 2: Nếu tất cả JSON Mirror đều lỗi -> Dùng RSS (Tuyệt chiêu cuối)
-        # RSS không bao giờ bị chặn, nhưng thiếu score/comments count (sẽ hiện là 0)
-        rss_url = f"https://www.reddit.com{path}.rss"
-        try:
-            # Dùng requests tải nội dung RSS trước (Anti-block)
-            resp = requests.get(rss_url, headers=self.headers, timeout=10)
-            if resp.status_code == 200:
-                feed = feedparser.parse(resp.content)
-                if feed.entries:
-                    post = feed.entries[0]
-                    comments = []
-                    for entry in feed.entries[1:]:
-                        ts = time.mktime(entry.updated_parsed) if entry.updated_parsed else time.time()
-                        comments.append({
-                            'body': self.clean_html(entry.content[0].value if 'content' in entry else entry.summary),
-                            'author': entry.author if 'author' in entry else "Unknown",
-                            'score': 0, # RSS k có score
-                            'created_utc': ts,
-                            'timestamp': datetime.fromtimestamp(ts),
-                            'permalink': entry.link
-                        })
-                    
-                    return {
-                        'success': True,
-                        'meta': {
-                            'title': post.title,
-                            'subreddit': feed.feed.get('subtitle', 'Reddit').replace('r/', ''),
-                            'score': 0, 'num_comments': len(comments),
-                            'author': post.author if 'author' in post else "Unknown",
-                            'created': datetime.fromtimestamp(time.mktime(post.updated_parsed)),
-                            'url': post.link,
-                            'selftext': self.clean_html(post.content[0].value if 'content' in post else post.summary)
-                        },
-                        'comments': comments
-                    }
+                feed = feedparser.parse(response.content)
+                if not feed.entries: return {'success': False, 'error': 'Không tìm thấy nội dung.'}
+
+                post = feed.entries[0]
+                comments = []
+                for entry in feed.entries[1:]:
+                    ts = time.mktime(entry.updated_parsed) if entry.updated_parsed else time.time()
+                    comments.append({
+                        'body': self.clean_html(entry.content[0].value if 'content' in entry else entry.summary),
+                        'author': entry.author if 'author' in entry else "Unknown",
+                        'score': 0,
+                        'created_utc': ts,
+                        'timestamp': datetime.fromtimestamp(ts),
+                        'permalink': entry.link
+                    })
+
+                return {
+                    'success': True,
+                    'meta': {
+                        'title': post.title,
+                        'subreddit': feed.feed.get('subtitle', 'Reddit').replace('r/', ''),
+                        'score': 0, 'num_comments': len(comments),
+                        'author': post.author if 'author' in post else "Unknown",
+                        'created': datetime.fromtimestamp(time.mktime(post.updated_parsed)) if post.updated_parsed else datetime.now(),
+                        'url': post.link, 'permalink': post.link,
+                        'selftext': self.clean_html(post.content[0].value if 'content' in post else post.summary)
+                    },
+                    'comments': comments
+                }
         except Exception as e:
-            last_error = f"Cả JSON và RSS đều lỗi: {e}"
+            return {'success': False, 'error': str(e)}
 
-        return {'success': False, 'error': f'Không thể tải dữ liệu. {last_error}'}
-
-# --- CORE 2: TRENDING MANAGER (MIRROR ROTATION) ---
+# --- CORE 2: TRENDING MANAGER (PURE RSS FIX) ---
 class TrendingPostsManager:
     def __init__(self):
-        self.mirrors = ["https://r.fxy.net", "https://l.opnxng.com", "https://www.reddit.com"]
-        self.headers = {'User-Agent': 'Mozilla/5.0'}
-
+        self.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    
     def fetch_trending_posts(self, subreddit, limit=5):
-        for domain in self.mirrors:
-            # Thử gọi JSON hot
-            url = f"{domain}/r/{subreddit}/hot.json?limit={limit}"
-            try:
-                resp = requests.get(url, headers=self.headers, timeout=6)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    posts = []
-                    for child in data['data']['children']:
-                        p = child['data']
-                        thumb = ''
-                        if 'thumbnail' in p and p['thumbnail'].startswith('http'): thumb = p['thumbnail']
-                        elif 'preview' in p and 'images' in p['preview']: thumb = p['preview']['images'][0]['source']['url'].replace('&amp;', '&')
+        # Sử dụng RSS Feed chuẩn của Reddit (Không dùng JSON/Mirror nữa vì hay chết)
+        # Thêm ?limit= để báo cho server Reddit biết
+        url = f"https://www.reddit.com/r/{subreddit}/hot.rss?limit={limit}"
+        try:
+            # Requests tải XML về
+            resp = requests.get(url, headers=self.headers, timeout=10)
+            if resp.status_code != 200: return []
+            
+            feed = feedparser.parse(resp.content)
+            posts = []
+            
+            # RSS trả về danh sách bài viết trực tiếp
+            for entry in feed.entries[:limit]:
+                # Lấy ảnh từ HTML content
+                thumb = ''
+                content = entry.content[0].value if 'content' in entry else entry.summary
+                img = re.search(r'src="([^"]+jpg|[^"]+png)"', content)
+                if img: thumb = img.group(1)
 
-                        posts.append({
-                            'id': p['id'],
-                            'title': p['title'],
-                            'author': p['author'],
-                            'score': p.get('score', 0),
-                            'comments_count': p.get('num_comments', 0),
-                            'created_utc': p.get('created_utc', time.time()),
-                            'url': f"https://www.reddit.com{p['permalink']}",
-                            'subreddit': subreddit,
-                            'thumbnail': thumb
-                        })
-                    return posts
-            except: continue
-        return []
-
+                # RSS không có score, ta gán mặc định để không lỗi code
+                posts.append({
+                    'id': entry.id if 'id' in entry else str(hash(entry.link)),
+                    'title': entry.title,
+                    'author': entry.author if 'author' in entry else "Unknown",
+                    'score': 0, # RSS không có score
+                    'comments_count': 0, # RSS không có count
+                    'created_utc': time.mktime(entry.updated_parsed) if entry.updated_parsed else time.time(),
+                    'url': entry.link, 
+                    'subreddit': subreddit, 
+                    'thumbnail': thumb
+                })
+            return posts
+        except: return []
+    
     def fetch_multiple_subreddits(self, subreddits, limit_per_sub=5):
         all_posts = []
-        bar = st.progress(0, text="Đang quét tin tức từ nhiều nguồn...")
+        bar = st.progress(0, text="Đang tải tin tức RSS...")
         for i, sub in enumerate(subreddits):
             posts = self.fetch_trending_posts(sub.strip(), limit=limit_per_sub)
             all_posts.extend(posts)
@@ -252,13 +184,14 @@ class TrendingPostsManager:
         stats = {}
         for p in posts:
             sub = p['subreddit']
-            if sub not in stats: stats[sub] = {'count': 0, 'total_score': 0, 'total_comments': 0}
+            if sub not in stats: 
+                stats[sub] = {'count': 0, 'posts': [], 'authors': set()}
             stats[sub]['count'] += 1
-            stats[sub]['total_score'] += p['score']
-            stats[sub]['total_comments'] += p['comments_count']
+            stats[sub]['posts'].append(p)
+            stats[sub]['authors'].add(p['author'])
         return stats
 
-# --- CORE 3: AI SUMMARIZER (GEMINI 1.5 FLASH) ---
+# --- CORE 3: AI SUMMARIZER (MULTI-MODEL) ---
 class AISummarizer:
     def __init__(self):
         self.api_key = GOOGLE_GEMINI_API_KEY
@@ -267,34 +200,23 @@ class AISummarizer:
             except: pass
 
     def generate_summary(self, title, body, comments):
-        if not GEMINI_AVAILABLE: return "⚠️ Chưa cài thư viện Google AI."
-        if not self.api_key: return "⚠️ Chưa cấu hình API Key."
-
-        cmts = "\n".join([f"- {c['body'][:200]}..." for c in comments[:15]])
-        prompt = f"""
-        Tóm tắt bài Reddit (Tiếng Việt Markdown):
-        Title: {title}
-        Body: {body[:1000]}...
-        Comments: {cmts}
+        if not GEMINI_AVAILABLE or not self.api_key: return "⚠️ Chưa cấu hình AI."
         
-        Output:
-        1. **Tóm tắt:** Vấn đề chính.
-        2. **Phản ứng:** Đồng tình/Phản đối.
-        3. **Góc nhìn:** 3 điểm chính.
-        """
+        cmts = "\n".join([f"- {c['body'][:200]}..." for c in comments[:15]])
+        prompt = f"Tóm tắt bài Reddit (Tiếng Việt):\nTitle: {title}\nBody: {body}\nComments: {cmts}\nOutput: Tóm tắt, Phản ứng, Cảm xúc."
         
         models = ['gemini-1.5-flash','gemini-2.0-flash', 'gemini-pro']
         for m in models:
             try:
                 model = genai.GenerativeModel(m)
-                return f"**⚡ Phân tích bởi {m}:**\n\n{model.generate_content(prompt).text}"
+                return f"**⚡ {m}:**\n\n{model.generate_content(prompt).text}"
             except: continue
         return "⚠️ Lỗi kết nối AI."
 
-# --- CORE 4: NLP ENGINE ---
+# --- CORE 4: NLP ---
 class EnhancedNLPEngine:
     def __init__(self):
-        self.emotions = {'Vui': {'love', 'good', 'great'}, 'Giận': {'hate', 'bad', 'angry'}, 'Sợ': {'scary', 'risk'}, 'Buồn': {'sad', 'sorry'}}
+        self.emotions = {'Vui': {'love', 'good'}, 'Giận': {'hate', 'bad'}, 'Sợ': {'scary'}, 'Buồn': {'sad'}}
     def process_batch(self, comments):
         results = []
         for c in comments:
@@ -312,20 +234,20 @@ class EnhancedNLPEngine:
             results.append(c | {'sentiment': sent, 'polarity': pol, 'emoji': em, 'emotions': ems, 'word_count': len(c['body'].split())})
         return results
 
-# --- CORE 5: VIZ ENGINE (SAFE) ---
+# --- CORE 5: VIZ (SAFE) ---
 class EnhancedVizEngine:
     @staticmethod
     def plot_sentiment_distribution(df):
         if df.empty: return None
         return px.pie(df, names='sentiment', title="Sentiment", hole=0.5, color='sentiment',
-                     color_discrete_map={'Positive':'#00CC96','Negative':'#FF512F','Neutral':'#FECB52'})
+                     color_discrete_map={'Positive':'#00CC96','Negative':'#FF416C','Neutral':'#FECB52'})
 
     @staticmethod
     def plot_emotion_radar(df):
         ems = [e for sub in df['emotions'] for e in sub if e != 'Neutral']
         if not ems: return None
         counts = Counter(ems)
-        return px.line_polar(r=list(counts.values()), theta=list(counts.keys()), line_close=True, title="Emotion Radar")
+        return px.line_polar(r=list(counts.values()), theta=list(counts.keys()), line_close=True, title="Emotion")
 
     @staticmethod
     def plot_sentiment_timeline(df):
@@ -337,7 +259,7 @@ class EnhancedVizEngine:
 def show_auth_section():
     if not st.session_state.authenticated:
         st.markdown("<div class='auth-section'>", unsafe_allow_html=True)
-        st.info("Chế độ Cloud (Login Demo)")
+        st.info("Chế độ Demo (Cloud/Local)")
         if st.button("🚀 Đăng nhập Demo", use_container_width=True):
             st.session_state.authenticated = True
             st.session_state.user = {"username": "DemoUser", "email": "demo@mail.com", "id": 1}
@@ -350,17 +272,16 @@ def show_auth_section():
             st.rerun()
 
 def show_trending_posts():
-    st.markdown("### 🔥 Xu Hướng (Hybrid Mode)")
+    st.markdown("### 🔥 Xu Hướng (RSS)")
     c1, c2 = st.columns([3, 1])
     with c1:
-        subs = st.text_input("Subreddits", "technology, python, artificial")
+        subs = st.text_input("Subreddits", "technology, python, artificial, vietnam")
     with c2:
         limit = st.slider("Số lượng", 3, 10, 5)
 
     if st.button("Tải dữ liệu", use_container_width=True):
         tm = TrendingPostsManager()
-        with st.spinner("Đang tải..."):
-            st.session_state.trending_data = tm.fetch_multiple_subreddits([s.strip() for s in subs.split(',')], limit_per_sub=limit)
+        st.session_state.trending_data = tm.fetch_multiple_subreddits([s.strip() for s in subs.split(',')], limit_per_sub=limit)
         st.rerun()
 
     if 'trending_data' in st.session_state and st.session_state.trending_data:
@@ -375,7 +296,9 @@ def show_trending_posts():
                     else: st.markdown("### 📄")
                 with c2:
                     st.markdown(f"**{p['title']}**")
-                    st.caption(f"r/{p['subreddit']} • ⬆️ {p['score']} • 💬 {p['comments_count']}")
+                    # RSS không có số liệu score/comment, chỉ hiện tên
+                    st.caption(f"r/{p['subreddit']} • {p['author']}")
+                    
                     if st.button("⚡ Phân tích", key=f"btn_{p['id']}"):
                         analyze_post_callback(p['url'])
                         st.rerun()
@@ -394,12 +317,12 @@ def show_trend_analysis():
     
     c1, c2, c3 = st.columns(3)
     c1.metric("Tổng bài viết", len(posts))
-    c2.metric("Tổng Upvote", f"{sum(p['score'] for p in posts):,}")
-    c3.metric("Tổng Bình luận", f"{sum(p['comments_count'] for p in posts):,}")
+    c2.metric("Chủ đề", len(stats))
+    c3.metric("Tác giả", len(set(p['author'] for p in posts)))
     
     if stats:
-        data = [{'Sub': k, 'Upvotes': v['total_score']} for k, v in stats.items()]
-        st.plotly_chart(px.bar(data, x='Sub', y='Upvotes', title="So sánh tương tác"), use_container_width=True)
+        data = [{'Sub': k, 'Count': v['count']} for k, v in stats.items()]
+        st.plotly_chart(px.bar(data, x='Sub', y='Count', title="Số lượng bài viết theo chủ đề"), use_container_width=True)
 
 def show_single_analysis():
     st.markdown("### 🔗 Phân Tích Chi Tiết")
@@ -419,7 +342,7 @@ def perform_analysis(url):
     ai = AISummarizer()
     
     with st.status("Đang xử lý...", expanded=True) as s:
-        s.update(label="Tải dữ liệu (Hybrid)...")
+        s.update(label="Tải RSS...")
         raw = loader.fetch(url)
         if not raw['success']: 
             s.update(label="Lỗi!", state="error")
@@ -430,7 +353,7 @@ def perform_analysis(url):
         df = pd.DataFrame(nlp.process_batch(raw['comments']))
         if not df.empty: df = df[df['word_count'] >= 2]
 
-        s.update(label="Gemini AI (1.5 Flash)...")
+        s.update(label="Gemini AI...")
         summary = ai.generate_summary(raw['meta']['title'], raw['meta']['selftext'], raw['comments'])
         
         st.session_state.current_analysis = {'df': df, 'meta': raw['meta'], 'summary': summary}
@@ -440,11 +363,13 @@ def perform_analysis(url):
     render_results(st.session_state.current_analysis)
 
 def render_results(data):
-    st.markdown(f"### 📄 {data['meta']['title']}")
+    st.markdown(f"### {data['meta']['title']}")
     viz = EnhancedVizEngine()
+    
     t1, t2, t3, t4 = st.tabs(["AI Tóm tắt", "Cảm xúc", "Radar", "Dữ liệu"])
     with t1:
         st.markdown("### 🤖 Báo cáo AI")
+        # Fix lỗi div thừa
         st.markdown(f"<div class='comment-card'>\n\n{data['summary']}\n\n</div>", unsafe_allow_html=True)
     with t2:
         c1, c2 = st.columns(2)
@@ -478,11 +403,11 @@ def main():
         show_auth_section()
 
     if not st.session_state.authenticated:
-        st.markdown("<div class='welcome-container'><h1>🧠 Reddit Analytics Pro</h1><p>Hybrid Engine • Gemini 1.5</p></div>", unsafe_allow_html=True)
-        st.info("Vui lòng đăng nhập (Demo).")
+        st.markdown("<div class='welcome-container'><h1>🧠 Analytics Pro</h1><p>RSS • Gemini • Secure</p></div>", unsafe_allow_html=True)
+        st.info("Vui lòng đăng nhập Demo.")
         return
 
-    st.markdown('<div class="main-header"><h1>🧠 Analytics Pro</h1><p>Hybrid (Mirror/RSS) • Secure</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header"><h1>🧠 Analytics Pro</h1><p>Cloud Ready</p></div>', unsafe_allow_html=True)
     
     opts = ["Dashboard", "Trending", "Analysis", "Single"]
     sel = st.radio("Nav", opts, index=opts.index(st.session_state.active_tab) if st.session_state.active_tab in opts else 0, horizontal=True, label_visibility="collapsed")
