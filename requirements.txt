@@ -30,3 +30,7 @@ beautifulsoup4
 
 praw
 feedparser
+# --- Advanced NLP & Forecasting ---
+prophet
+keybert
+sentence-transformers
