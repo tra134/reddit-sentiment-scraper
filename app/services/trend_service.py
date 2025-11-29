@@ -29,36 +29,35 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+import re
+import logging
+from typing import List, Dict, Any, Optional
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
 class TrendAnalysisService:
-    """Improved service combining Prophet, BERTopic and KeyBERT for trend analysis.
 
-    Major improvements:
-    - Better Vietnamese text processing
-    - Model caching and memory management
-    - Robust error handling
-    - Configurable preprocessing
-    - Improved forecasting validation
-    """
-
-    def __init__(self,
-                 embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2",
-                 bertopic_kwargs: Optional[Dict[str, Any]] = None,
-                 prophet_kwargs: Optional[Dict[str, Any]] = None,
-                 keybert_kwargs: Optional[Dict[str, Any]] = None,
-                 min_posts_for_analysis: int = 5):
-        
-        # Use multilingual model for Vietnamese support
+    def __init__(
+        self,
+        embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2",
+        bertopic_kwargs: Optional[Dict[str, Any]] = None,
+        prophet_kwargs: Optional[Dict[str, Any]] = None,
+        keybert_kwargs: Optional[Dict[str, Any]] = None,
+        min_posts_for_analysis: int = 5
+    ):
         self.embedding_model = embedding_model
         self.min_posts_for_analysis = min_posts_for_analysis
-        
-        # Default parameters optimized for Vietnamese text
+
         self._bertopic_kwargs = {
             'language': 'multilingual',
             'calculate_probabilities': False,
             'verbose': False,
             **(bertopic_kwargs or {})
         }
-        
+
         self._prophet_kwargs = {
             'changepoint_prior_scale': 0.05,
             'seasonality_prior_scale': 10.0,
@@ -66,7 +65,7 @@ class TrendAnalysisService:
             'seasonality_mode': 'multiplicative',
             **(prophet_kwargs or {})
         }
-        
+
         self._keybert_kwargs = {
             'diversity': 0.7,
             'use_mmr': True,
@@ -74,24 +73,19 @@ class TrendAnalysisService:
             **(keybert_kwargs or {})
         }
 
-        # Lazy-loaded objects
         self._topic_model = None
         self._kw_model = None
         self._prophet = None
         self._embedding_model = None
-
-        # Extended stopwords for Vietnamese and English
         self.stopwords = self._get_stopwords()
 
     def _get_stopwords(self) -> set:
-        """Get comprehensive stopwords for Vietnamese and English."""
         english_stopwords = {
-            'the', 'a', 'an', 'in', 'on', 'at', 'for', 'to', 'of', 'is', 'are', 
+            'the', 'a', 'an', 'in', 'on', 'at', 'for', 'to', 'of', 'is', 'are',
             'and', 'or', 'with', 'i', 'my', 'you', 'it', 'this', 'that', 'was',
             'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did',
             'will', 'would', 'could', 'should', 'may', 'might', 'can'
         }
-        
         vietnamese_stopwords = {
             'của', 'và', 'là', 'những', 'các', 'trong', 'khi', 'với', 'có', 'được',
             'cho', 'này', 'nào', 'đó', 'nên', 'theo', 'như', 'một', 'về', 'cũng',
@@ -99,12 +93,9 @@ class TrendAnalysisService:
             'giờ', 'phút', 'giây', 'người', 'người ta', 'mình', 'tôi', 'ta', 'chúng ta',
             'bạn', 'các bạn', 'anh', 'chị', 'em', 'ông', 'bà', 'nó', 'họ', 'chúng nó'
         }
-        
         return english_stopwords.union(vietnamese_stopwords)
 
-    # ---------------------------- Model Management ----------------------------
     def _ensure_models(self):
-        """Load heavy models on-demand with better error handling."""
         if self._topic_model is None or self._kw_model is None:
             try:
                 from bertopic import BERTopic
@@ -115,16 +106,12 @@ class TrendAnalysisService:
                 raise ImportError("Please install bertopic, sentence-transformers, and keybert") from e
 
             try:
-                logger.info("Loading multilingual embedding model '%s'...", self.embedding_model)
                 self._embedding_model = SentenceTransformer(self.embedding_model)
-
-                logger.info("Initializing BERTopic and KeyBERT...")
                 self._topic_model = BERTopic(
-                    embedding_model=self._embedding_model, 
+                    embedding_model=self._embedding_model,
                     **self._bertopic_kwargs
                 )
                 self._kw_model = KeyBERT(model=self._embedding_model)
-                
             except Exception as e:
                 logger.error("Model initialization failed: %s", e)
                 raise
@@ -133,121 +120,76 @@ class TrendAnalysisService:
             try:
                 from prophet import Prophet
                 self._prophet = Prophet(**self._prophet_kwargs)
-                logger.info("Prophet initialized successfully")
             except Exception as e:
                 logger.error("Prophet initialization failed: %s", e)
                 raise
 
     def clear_models(self):
-        """Clear models to free memory."""
         self._topic_model = None
         self._kw_model = None
         self._prophet = None
         self._embedding_model = None
-        logger.info("Models cleared from memory")
 
-    # ---------------------------- Data Preprocessing ----------------------------
     def _clean_text(self, text: str) -> str:
-        """Clean and normalize text for Vietnamese and English."""
         if not isinstance(text, str):
             return ""
-        
-        # Remove URLs
         text = re.sub(r'http\S+', '', text)
-        # Remove special characters but keep Vietnamese diacritics
         text = re.sub(r'[^\w\sàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴĐ]', ' ', text)
-        # Normalize whitespace
         text = re.sub(r'\s+', ' ', text).strip()
-        # Convert to lowercase
         text = text.lower()
-        
         return text
 
     def _preprocess(self, posts_data: List[Dict[str, Any]]) -> pd.DataFrame:
-        """Improved preprocessing with better validation and text cleaning."""
         if not posts_data:
             return pd.DataFrame()
-
         df = pd.DataFrame(posts_data)
-        logger.info("Preprocessing %d posts", len(df))
-
-        # Handle datetime conversion
         if 'created_utc' in df.columns:
             df['datetime'] = self._to_datetime(df['created_utc'])
         elif 'timestamp' in df.columns:
             df['datetime'] = self._to_datetime(df['timestamp'])
         else:
-            logger.warning("No timestamp found, using current time")
             df['datetime'] = pd.Timestamp.now()
-
-        # Clean and prepare text data
         if 'title' not in df.columns:
             df['title'] = df.get('selftext', '').apply(str)
-        
         df['title_clean'] = df['title'].apply(self._clean_text)
         df['text_length'] = df['title_clean'].str.len()
-
-        # Handle numeric columns with better error handling
         df['score'] = pd.to_numeric(df.get('score', 0), errors='coerce').fillna(0).astype(int)
         df['comments_count'] = pd.to_numeric(
-            df.get('comments_count', df.get('num_comments', 0)), 
+            df.get('comments_count', df.get('num_comments', 0)),
             errors='coerce'
         ).fillna(0).astype(int)
-
-        # Calculate engagement score (combination of score and comments)
         df['engagement'] = df['score'] + df['comments_count'] * 2
-
-        # Remove invalid rows
-        initial_count = len(df)
         df = df.dropna(subset=['datetime']).reset_index(drop=True)
-        df = df[df['text_length'] > 5].reset_index(drop=True)  # Remove very short texts
-        
-        logger.info("Filtered %d -> %d valid posts", initial_count, len(df))
+        df = df[df['text_length'] > 5].reset_index(drop=True)
         return df
 
     @staticmethod
     def _to_datetime(series: pd.Series) -> pd.Series:
-        """Convert various timestamp formats to datetime."""
         if np.issubdtype(series.dtype, np.number):
-            # Assume Unix timestamp
             return pd.to_datetime(series, unit='s', utc=True).dt.tz_convert(None)
         else:
-            # Try to parse as string
             return pd.to_datetime(series, errors='coerce', utc=True).dt.tz_convert(None)
 
-    # ---------------------------- Topic Modeling ----------------------------
     def extract_topics(self, df: pd.DataFrame, top_n: int = 10) -> List[Dict[str, Any]]:
-        """Improved topic extraction with better representation."""
         if len(df) < self.min_posts_for_analysis:
-            logger.warning("Insufficient data for topic modeling: %d posts", len(df))
             return []
-
         self._ensure_models()
         titles = df['title_clean'].tolist()
-
         try:
-            logger.info("Fitting BERTopic on %d titles...", len(titles))
             topics, probabilities = self._topic_model.fit_transform(titles)
-            
             topic_info = self._topic_model.get_topic_info()
-            
             topics_out = []
-            for _, row in topic_info.head(top_n + 1).iterrows():  # +1 for outlier topic
+            for _, row in topic_info.head(top_n + 1).iterrows():
                 topic_id = int(row['Topic'])
-                
                 if topic_id == -1:
-                    # Skip outlier topic in main results or handle specially
                     continue
-                
                 topic_terms = self._topic_model.get_topic(topic_id)
                 if topic_terms:
-                    # Get top 5 terms for representation
                     representative_terms = [term for term, score in topic_terms[:5]]
                     name = ', '.join(representative_terms)
                 else:
                     representative_terms = []
                     name = f"Topic_{topic_id}"
-
                 topics_out.append({
                     'topic_id': topic_id,
                     'name': name,
@@ -255,158 +197,74 @@ class TrendAnalysisService:
                     'representation': representative_terms,
                     'percentage': float(row['Count']) / len(df) * 100
                 })
-
             return topics_out
-
         except Exception as e:
             logger.error("Topic extraction failed: %s", e)
             return []
 
-    # ---------------------------- Keyword Extraction ----------------------------
     def extract_keywords(self, df: pd.DataFrame, top_n: int = 10) -> List[Dict[str, Any]]:
-        """Improved keyword extraction with text filtering."""
-        if len(df) < 3:  # Need minimum texts for meaningful keywords
+        if len(df) < 3:
             return []
-
         self._ensure_models()
-        
-        # Use cleaned titles and filter very short texts
         valid_texts = [text for text in df['title_clean'].tolist() if len(text) > 10]
-        
         if not valid_texts:
             return []
-
         text_blob = ". ".join(valid_texts)
-
         try:
             keywords = self._kw_model.extract_keywords(
-                text_blob, 
-                top_n=top_n * 2,  # Extract more then filter
+                text_blob,
+                top_n=top_n * 2,
                 **self._keybert_kwargs
             )
-            
-            # Filter out very common words and short keywords
             filtered_keywords = []
             for kw, score in keywords:
                 kw_lower = kw.lower()
-                if (len(kw) > 2 and 
-                    kw_lower not in self.stopwords and 
-                    not kw_lower.isdigit()):
+                if len(kw) > 2 and kw_lower not in self.stopwords and not kw_lower.isdigit():
                     filtered_keywords.append((kw, score))
-            
-            return [{'keyword': kw, 'score': float(score)} 
-                   for kw, score in filtered_keywords[:top_n]]
-            
+            return [{'keyword': kw, 'score': float(score)} for kw, score in filtered_keywords[:top_n]]
         except Exception as e:
             logger.error("Keyword extraction failed: %s", e)
             return []
 
-    # ---------------------------- Forecasting ----------------------------
-    def forecast_scores(self, df: pd.DataFrame, days: int = 7, 
-                       confidence_interval: float = 0.8) -> Dict[str, Any]:
-        """Improved forecasting with better validation and metrics."""
-        if len(df) < 10:  # Minimum data points for meaningful forecast
+    def forecast_scores(self, df: pd.DataFrame, days: int = 7,
+                        confidence_interval: float = 0.8) -> Dict[str, Any]:
+        if len(df) < 3:
             return {
                 'error': 'insufficient_data',
-                'message': f'Need at least 10 data points, got {len(df)}',
-                'required': 10,
+                'message': f'Cần ít nhất 3 data points, có {len(df)}',
+                'required': 3,
                 'found': len(df)
             }
-
-        self._ensure_models()
-
         try:
-            # Aggregate daily with engagement metric
-            daily = df.set_index('datetime').resample('D').agg({
-                'score': 'sum',
-                'engagement': 'sum',
-                'comments_count': 'sum'
-            }).reset_index()
-            
-            daily.columns = ['ds', 'y_score', 'y_engagement', 'y_comments']
-            
-            # Use engagement as primary metric, fallback to score
-            daily['y'] = daily['y_engagement']  # Primary metric
-
-            if len(daily) < 5:
-                return {'error': 'insufficient_daily_points', 'required': 5, 'found': len(daily)}
-
-            # Remove outliers using IQR
-            Q1 = daily['y'].quantile(0.25)
-            Q3 = daily['y'].quantile(0.75)
-            IQR = Q3 - Q1
-            daily_clean = daily[
-                (daily['y'] >= Q1 - 1.5 * IQR) & 
-                (daily['y'] <= Q3 + 1.5 * IQR)
-            ]
-
-            if len(daily_clean) < 3:
-                daily_clean = daily  # Fallback to original if too many outliers
-
-            # Fit Prophet model
-            from prophet import Prophet
-            m = Prophet(
-                **self._prophet_kwargs,
-                interval_width=confidence_interval
-            )
-            
-            # Add weekly seasonality
-            m.add_seasonality(name='weekly', period=7, fourier_order=3)
-            
-            m.fit(daily_clean[['ds', 'y']])
-
-            # Create future dataframe
-            future = m.make_future_dataframe(periods=days, include_history=False)
-            forecast = m.predict(future)
-
-            # Prepare output
-            forecast_data = []
-            for _, row in forecast.iterrows():
-                forecast_data.append({
-                    'date': row['ds'].strftime('%Y-%m-%d'),
-                    'predicted_engagement': float(row['yhat']),
-                    'predicted_lower': float(row['yhat_lower']),
-                    'predicted_upper': float(row['yhat_upper']),
-                    'confidence_interval': f"{confidence_interval*100:.0f}%"
-                })
-
-            # Calculate trend direction
-            recent = daily_clean.tail(min(7, len(daily_clean)))
-            if len(recent) >= 2:
-                x = np.arange(len(recent))
-                slope = np.polyfit(x, recent['y'].values, 1)[0]
-                avg_value = recent['y'].mean()
-                
-                if slope > avg_value * 0.15:
-                    trend_direction = "Tăng mạnh 🚀"
-                elif slope > avg_value * 0.05:
-                    trend_direction = "Tăng nhẹ ↗️"
-                elif slope < -avg_value * 0.15:
-                    trend_direction = "Giảm mạnh 📉"
-                elif slope < -avg_value * 0.05:
-                    trend_direction = "Giảm nhẹ ↘️"
-                else:
-                    trend_direction = "Ổn định ➡️"
+            forecast_engine = RobustForecastEngine()
+            result = forecast_engine.forecast_engagement(df, days)
+            if result and result.get('forecast'):
+                return {
+                    'forecast': result['forecast'],
+                    'trend_direction': result['trend_direction'],
+                    'trend_slope': 0.0,
+                    'last_actual_date': df['datetime'].max().strftime('%Y-%m-%d') if 'datetime' in df.columns else datetime.now().strftime('%Y-%m-%d'),
+                    'last_actual_value': float(df['engagement'].iloc[-1]) if 'engagement' in df.columns else 0,
+                    'data_points': {
+                        'total': len(df),
+                        'forecast_period': days
+                    },
+                    'confidence_interval': result.get('confidence', 'medium'),
+                    'method_used': result.get('method', 'unknown')
+                }
             else:
-                trend_direction = "Không đủ dữ liệu"
-
-            return {
-                'forecast': forecast_data,
-                'trend_direction': trend_direction,
-                'trend_slope': float(slope) if 'slope' in locals() else 0.0,
-                'last_actual_date': daily_clean['ds'].max().strftime('%Y-%m-%d'),
-                'last_actual_value': float(daily_clean['y'].iloc[-1]),
-                'data_points': {
-                    'total': len(daily),
-                    'after_cleaning': len(daily_clean),
-                    'forecast_period': days
-                },
-                'confidence_interval': confidence_interval
-            }
-
+                return {
+                    'error': 'forecast_failed',
+                    'message': 'Tất cả methods forecasting đều thất bại',
+                    'fallback_data': forecast_engine._fallback_forecast(df, days)
+                }
         except Exception as e:
-            logger.error("Forecasting failed: %s", e)
-            return {'error': 'forecast_failed', 'reason': str(e)}
+            logger.error(f"Forecasting failed: {e}")
+            return {
+                'error': 'forecast_failed',
+                'reason': str(e),
+                'fallback': 'Sử dụng giá trị trung bình làm ước lượng'
+            }
 
     # ---------------------------- Full Analysis ----------------------------
     def analyze_subreddit(self, 
