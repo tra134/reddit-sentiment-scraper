@@ -512,91 +512,100 @@ db = DBManager()
 # ==========================================
 class RedditLoader:
     def __init__(self):
-        self.base_url = "https://www.reddit.com"
-        # TẠO USER-AGENT NGẪU NHIÊN ĐỂ TRÁNH BỊ CHẶN
-        random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-        self.user_agent_base = f'web:reddit_insider_ai_{random_id}:v1.0.0'
+        # THÊM DANH SÁCH MIRROR GIỐNG CODE GỐC
+        self.mirrors = [
+            "https://www.reddit.com",       # Chính chủ
+            "https://redlib.vling.moe",     # Mirror 1
+            "https://r.fxy.net",            # Mirror 2
+            "https://snoo.habedieeh.re"     # Mirror 3
+        ]
         
+        # USER-AGENT TỐI ƯU HƠN (giống code gốc)
         self.headers = {
-            'User-Agent': self.user_agent_base,
-            'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'DNT': '1',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
         }
-        self.session = requests.Session()
-        self.session.headers.update(self.headers)
     
     def fetch_data(self, url, retries=3, current_retry=0):
-        """Fetch data với fallback tự động ẩn"""
-        if current_retry >= retries:
-            return None, f"Đã thử {retries} lần nhưng không thành công"
-        
+        """Fetch data với hệ thống mirror failover giống code gốc"""
+        # 1. Xử lý URL: Lấy path từ URL
         try:
-            # Thay đổi User-Agent cho mỗi lần thử
-            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-            self.session.headers['User-Agent'] = f'{self.user_agent_base}_{random_suffix}'
+            if "reddit.com" in url:
+                path = url.split("reddit.com")[1].split('?')[0]
+            elif "redd.it" in url:
+                return {'success': False, 'error': 'Vui lòng dùng link đầy đủ.'}, None
+            else:
+                # Xử lý link mirror
+                if url.startswith("http"):
+                    path = "/" + "/".join(url.split("/")[3:])
+                else:
+                    path = url
             
-            if not url.startswith('http'):
-                url = 'https://' + url
-            
-            if 'reddit.com' not in url:
-                return None, "URL không phải là Reddit"
-            
-            # FALLBACK TỰ ĐỘNG: Strategy chain
-            if current_retry == 0:
-                # Thử JSON API đầu tiên
-                url = self._normalize_url(url)
-            elif current_retry == 1:
-                # Thử old.reddit.com
+            path = path.rstrip('/') + ".json"
+        except:
+            return {'success': False, 'error': 'Link không hợp lệ.'}, None
+
+        # 2. Thử lần lượt các mirror (Retry Logic giống code gốc)
+        last_error = ""
+        for domain in self.mirrors:
+            target_url = domain + path
+            try:
+                # Timeout ngắn như code gốc
+                response = requests.get(target_url, headers=self.headers, timeout=8)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    return self._parse_reddit_data(data, target_url)
+                else:
+                    last_error = f"HTTP {response.status_code} tại {domain}"
+                    continue
+            except Exception as e:
+                last_error = str(e)
+                continue
+        
+        # 3. Fallback: Thử các phương pháp khác nếu mirror đều fail
+        if current_retry < retries:
+            return self._try_fallback_methods(url, retries, current_retry + 1)
+        else:
+            return {'success': False, 'error': f'Không thể tải dữ liệu. Lỗi cuối: {last_error}'}, None
+    
+    def _try_fallback_methods(self, url, retries, current_retry):
+        """Thử các phương pháp fallback"""
+        try:
+            # Thử old.reddit.com
+            if current_retry == 1:
                 if 'www.reddit.com' in url:
                     url = url.replace('www.reddit.com', 'old.reddit.com')
-                    url = self._normalize_url(url)
-            elif current_retry == 2:
-                # Thử RSS feed với format=xml
-                url = self._convert_to_rss_url(url)
-                if not url:
-                    return None, "Không thể chuyển sang RSS"
-            
-            response = self.session.get(url, timeout=15, allow_redirects=True)
-            
-            if response.status_code == 200:
-                if '.rss' in url or 'format=xml' in url:
-                    # Parse RSS
-                    return self._parse_rss_data(response.text, url)
-                else:
-                    try:
+                url = self._normalize_url(url)
+                response = requests.get(url, headers=self.headers, timeout=8)
+                if response.status_code == 200:
+                    if url.endswith('.json'):
                         data = response.json()
                         return self._parse_reddit_data(data, url)
-                    except json.JSONDecodeError:
+                    else:
                         return self._parse_html_fallback(response.text, url)
             
-            elif response.status_code == 403:
-                # Tự động thử phương thức khác
-                time.sleep(1)
-                return self.fetch_data(url, retries, current_retry + 1)
+            # Thử RSS
+            elif current_retry == 2:
+                rss_url = self._convert_to_rss_url(url)
+                if rss_url:
+                    response = requests.get(rss_url, headers=self.headers, timeout=8)
+                    if response.status_code == 200:
+                        return self._parse_rss_data(response.text, rss_url)
             
-            elif response.status_code == 429:
-                if current_retry < 2:
-                    time.sleep(3)
-                    return self.fetch_data(url, retries, current_retry + 1)
-                else:
-                    return None, "Reddit đang chặn yêu cầu. Vui lòng thử lại sau 1 phút."
-            
-            elif response.status_code == 404:
-                if current_retry < retries - 1:
-                    return self.fetch_data(url, retries, current_retry + 1)
-                return None, "Không tìm thấy bài viết"
-            
-            else:
-                return None, f"Lỗi HTTP {response.status_code}"
-                
-        except requests.exceptions.Timeout:
-            return None, "Timeout khi kết nối đến Reddit"
+            # Thử HTML
+            elif current_retry == 3:
+                response = requests.get(url, headers=self.headers, timeout=8)
+                if response.status_code == 200:
+                    return self._parse_html_fallback(response.text, url)
+        
         except Exception as e:
-            return None, f"Lỗi: {str(e)[:100]}"
+            pass
+        
+        return {'success': False, 'error': f'Tất cả phương pháp đều thất bại (thử {current_retry}/{retries})'}, None
     
     def _normalize_url(self, url):
-        """Chuẩn hóa URL Reddit"""
+        """Chuẩn hóa URL Reddit (giữ nguyên của bạn)"""
         if '?' in url:
             url = url.split('?')[0]
         
@@ -610,7 +619,7 @@ class RedditLoader:
         return url
     
     def _convert_to_rss_url(self, url):
-        """Chuyển URL sang RSS format với ?format=xml"""
+        """Chuyển URL sang RSS format"""
         try:
             if '/comments/' in url:
                 match = re.search(r'/r/([^/]+)/comments/([^/]+)', url)
@@ -624,15 +633,106 @@ class RedditLoader:
             pass
         return None
     
+    def _parse_reddit_data(self, data, original_url):
+        """Parse dữ liệu Reddit JSON - TỐI ƯU LẠI ĐỂ GIỐNG CODE GỐC"""
+        try:
+            if isinstance(data, list) and len(data) >= 2:
+                post_data = data[0]['data']['children'][0]['data']
+                comments_data = data[1]['data']['children']
+                
+                # Format comments giống code gốc
+                comments = []
+                for c in comments_data:
+                    if 'data' in c and 'body' in c['data']:
+                        d = c['data']
+                        ts = d.get('created_utc', time.time())
+                        comments.append({
+                            'body': d.get('body', ''),
+                            'author': d.get('author', 'Unknown'),
+                            'score': d.get('score', 0),
+                            'created_utc': ts,
+                            'timestamp': datetime.fromtimestamp(ts),
+                            'permalink': f"https://www.reddit.com{d.get('permalink','')}",
+                            'id': d.get('id', '')
+                        })
+                
+                # Format meta giống code gốc
+                meta = {
+                    'title': post_data.get('title', 'No Title'),
+                    'subreddit': post_data.get('subreddit', 'unknown'),
+                    'score': post_data.get('score', 0),
+                    'num_comments': post_data.get('num_comments', 0),
+                    'author': post_data.get('author', '[deleted]'),
+                    'created': datetime.fromtimestamp(post_data.get('created_utc', time.time())),
+                    'created_utc': post_data.get('created_utc', time.time()),
+                    'created_time': self._format_time(post_data.get('created_utc', time.time())),
+                    'url': f"https://www.reddit.com{post_data.get('permalink', '')}",
+                    'permalink': f"https://www.reddit.com{post_data.get('permalink', '')}",
+                    'selftext': post_data.get('selftext', ''),
+                    'content': post_data.get('selftext', '')[:1500],
+                    'upvote_ratio': post_data.get('upvote_ratio', 0),
+                    'id': post_data.get('id', '')
+                }
+                
+                return {'success': True, 'meta': meta, 'comments': comments}, None
+                
+            elif isinstance(data, dict):
+                # Xử lý trường hợp single post
+                if 'data' in data and 'children' in data['data']:
+                    children = data['data']['children']
+                    if children and len(children) > 0:
+                        item_data = children[0]['data']
+                        
+                        meta = {
+                            'title': item_data.get('title', 'No Title'),
+                            'subreddit': item_data.get('subreddit', 'unknown'),
+                            'score': item_data.get('score', 0),
+                            'author': item_data.get('author', '[deleted]'),
+                            'created': datetime.fromtimestamp(item_data.get('created_utc', time.time())),
+                            'created_utc': item_data.get('created_utc', time.time()),
+                            'created_time': self._format_time(item_data.get('created_utc', time.time())),
+                            'url': f"https://www.reddit.com{item_data.get('permalink', '')}",
+                            'permalink': f"https://www.reddit.com{item_data.get('permalink', '')}",
+                            'selftext': item_data.get('selftext', ''),
+                            'content': item_data.get('selftext', '')[:1500],
+                            'num_comments': item_data.get('num_comments', 0),
+                            'upvote_ratio': item_data.get('upvote_ratio', 0),
+                            'id': item_data.get('id', '')
+                        }
+                        
+                        return {'success': True, 'meta': meta, 'comments': []}, None
+            
+            return {'success': False, 'error': 'Không thể phân tích dữ liệu JSON'}, None
+            
+        except Exception as e:
+            print(f"❌ Parse error: {e}")
+            return {'success': False, 'error': f"Lỗi phân tích: {str(e)}"}, None
+    
+    def _format_time(self, timestamp):
+        """Định dạng thời gian từ timestamp"""
+        try:
+            post_time = datetime.fromtimestamp(timestamp)
+            now = datetime.now()
+            diff = now - post_time
+            
+            if diff.days > 0:
+                return f"{diff.days} ngày trước"
+            elif diff.seconds > 3600:
+                hours = diff.seconds // 3600
+                return f"{hours} giờ trước"
+            else:
+                minutes = diff.seconds // 60
+                return f"{minutes} phút trước"
+        except:
+            return "Không rõ"
+    
     def _parse_rss_data(self, rss_content, url):
-        """Parse RSS data"""
+        """Parse RSS data (giữ nguyên của bạn)"""
         try:
             import xml.etree.ElementTree as ET
             
-            # Parse XML
             root = ET.fromstring(rss_content)
             
-            # Tìm title
             title = ""
             for item in root.findall('.//item'):
                 title_elem = item.find('title')
@@ -640,7 +740,6 @@ class RedditLoader:
                     title = title_elem.text
                     break
             
-            # Tìm subreddit
             subreddit = "unknown"
             match = re.search(r'/r/([^/]+)', url)
             if match:
@@ -661,123 +760,14 @@ class RedditLoader:
                 'id': 'rss_' + str(hash(url) % 10000)
             }
             
-            return {'meta': meta, 'comments': []}, None
+            return {'success': True, 'meta': meta, 'comments': []}, None
             
         except Exception as e:
             print(f"RSS parse error: {e}")
             return self._parse_html_fallback(rss_content, url)
     
-    def _parse_reddit_data(self, data, original_url):
-        """Parse dữ liệu Reddit JSON"""
-        try:
-            meta = {}
-            comments = []
-            
-            if isinstance(data, list) and len(data) >= 2:
-                post_part = data[0]
-                if ('data' in post_part and 
-                    'children' in post_part['data'] and 
-                    len(post_part['data']['children']) > 0):
-                    
-                    post_data = post_part['data']['children'][0]['data']
-                    meta = self._extract_post_meta(post_data, original_url)
-                    
-                    comments_part = data[1]
-                    if ('data' in comments_part and 
-                        'children' in comments_part['data']):
-                        
-                        comments_data = comments_part['data']['children']
-                        comments = self._extract_comments(comments_data)
-                
-            elif isinstance(data, dict):
-                if 'data' in data and 'children' in data['data']:
-                    children = data['data']['children']
-                    
-                    if children and len(children) > 0:
-                        item = children[0]
-                        if 'data' in item:
-                            item_data = item['data']
-                            
-                            if item.get('kind') == 't3':
-                                meta = self._extract_post_meta(item_data, original_url)
-                            elif item.get('kind') == 't1':
-                                comments = self._extract_comments(children)
-            
-            if not meta:
-                return None, "Không thể phân tích dữ liệu bài viết"
-            
-            return {'meta': meta, 'comments': comments}, None
-            
-        except Exception as e:
-            print(f"❌ Parse error: {e}")
-            return None, f"Lỗi phân tích: {str(e)}"
-    
-    def _extract_post_meta(self, post_data, original_url):
-        """Trích xuất metadata từ post data"""
-        permalink = post_data.get('permalink', '')
-        if permalink and not permalink.startswith('http'):
-            permalink = f"https://www.reddit.com{permalink}"
-        
-        # Tính thời gian đăng
-        created_time = ""
-        if 'created_utc' in post_data:
-            try:
-                post_time = datetime.fromtimestamp(post_data['created_utc'])
-                now = datetime.now()
-                diff = now - post_time
-                
-                if diff.days > 0:
-                    created_time = f"{diff.days} ngày trước"
-                elif diff.seconds > 3600:
-                    hours = diff.seconds // 3600
-                    created_time = f"{hours} giờ trước"
-                else:
-                    minutes = diff.seconds // 60
-                    created_time = f"{minutes} phút trước"
-            except:
-                created_time = "Không rõ"
-        
-        return {
-            'title': post_data.get('title', 'No Title'),
-            'subreddit': post_data.get('subreddit', 'unknown'),
-            'score': post_data.get('score', 0),
-            'author': post_data.get('author', '[deleted]'),
-            'content': post_data.get('selftext', '')[:1500],
-            'upvote_ratio': post_data.get('upvote_ratio', 0),
-            'created_utc': post_data.get('created_utc', 0),
-            'created_time': created_time,
-            'num_comments': post_data.get('num_comments', 0),
-            'permalink': permalink,
-            'url': permalink or original_url,
-            'id': post_data.get('id', ''),
-        }
-    
-    def _extract_comments(self, comments_data):
-        """Trích xuất comments"""
-        comments = []
-        
-        for child in comments_data:
-            try:
-                if child.get('kind') == 't1':
-                    comment = child['data']
-                    
-                    if comment.get('body') in ['[deleted]', '[removed]']:
-                        continue
-                    
-                    comments.append({
-                        'body': comment.get('body', ''),
-                        'author': comment.get('author', '[deleted]'),
-                        'score': comment.get('score', 0),
-                        'created_utc': comment.get('created_utc', 0),
-                        'id': comment.get('id', ''),
-                    })
-            except Exception as e:
-                continue
-        
-        return comments
-
     def _parse_html_fallback(self, html, url):
-        """Fallback parse từ HTML"""
+        """Fallback parse từ HTML (giữ nguyên của bạn)"""
         try:
             title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
             title = title_match.group(1).strip() if title_match else 'No Title'
@@ -795,187 +785,157 @@ class RedditLoader:
                 'url': url,
                 'num_comments': 0,
                 'permalink': url,
-                'created_time': 'Không rõ'
+                'created_time': 'Không rõ',
+                'created_utc': time.time(),
+                'id': 'html_' + str(hash(url) % 10000)
             }
             
-            return {'meta': meta, 'comments': []}, None
+            return {'success': True, 'meta': meta, 'comments': []}, None
             
         except Exception as e:
-            return None, f"HTML parse error: {e}"
+            return {'success': False, 'error': f"HTML parse error: {e}"}, None
+
 
 class TrendingManager:
     def __init__(self):
-        self.mirrors = ["https://www.reddit.com", "https://old.reddit.com"]
-        # USER-AGENT CHO TRENDING - TẠO NGẪU NHIÊN
-        random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        self.user_agent_base = f'web:reddit_trending_fetcher_{random_id}:v1.0.0'
+        # SỬA LẠI MIRRORS GIỐNG CODE GỐC
+        self.mirrors = [
+            "https://www.reddit.com", 
+            "https://redlib.vling.moe",
+            "https://r.fxy.net"
+        ]
         
+        # HEADER GIỐNG CODE GỐC
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        }
+    
     def fetch_feed(self, subreddits, limit=15):
-        """Lấy dữ liệu bài viết từ subreddits với fallback tự động"""
-        results = []
+        """Lấy dữ liệu trending từ nhiều subreddits"""
+        all_posts = []
         
         for sub in subreddits:
             sub = sub.strip().replace('r/', '').replace('/', '')
-            
-            # Strategy 1: Thử các mirrors
-            posts = self._try_mirrors(sub, limit)
-            
-            # Strategy 2: Thử RSS feed
-            if not posts:
-                posts = self._fetch_rss_feed(sub, limit)
-            
-            results.extend(posts)
+            posts = self.fetch_trending_posts(sub, limit)
+            all_posts.extend(posts)
         
         # Sắp xếp theo thời gian
-        results.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
-        return results
+        all_posts.sort(key=lambda x: x.get('created_utc', 0), reverse=True)
+        return all_posts
     
-    def _try_mirrors(self, subreddit, limit):
-        """Thử lấy data qua các mirrors"""
+    def fetch_trending_posts(self, subreddit, limit=5):
+        """Lấy trending posts từ một subreddit - GIỐNG CODE GỐC"""
         for domain in self.mirrors:
+            url = f"{domain}/r/{subreddit}/hot.json?limit={limit}"
             try:
-                # Tạo User-Agent ngẫu nhiên cho mỗi request
-                random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-                headers = {
-                    'User-Agent': f'{self.user_agent_base}_{random_suffix}',
-                    'Accept': 'application/json'
-                }
-                
-                url = f"{domain}/r/{subreddit}/hot.json?limit={limit}"
-                resp = requests.get(url, headers=headers, timeout=10)
-                
+                resp = requests.get(url, headers=self.headers, timeout=8)
                 if resp.status_code == 200:
                     data = resp.json()
-                    return self._parse_posts(data['data']['children'], subreddit)
-                elif resp.status_code == 403:
-                    # Thử RSS trên domain này
-                    rss_url = f"{domain}/r/{subreddit}/hot.rss?format=xml"
-                    rss_resp = requests.get(rss_url, headers=headers, timeout=10)
-                    if rss_resp.status_code == 200:
-                        return self._parse_rss_feed(rss_resp.text, subreddit)
+                    posts = []
+                    
+                    # Check structure giống code gốc
+                    if 'data' not in data or 'children' not in data['data']:
+                        continue
+
+                    for child in data['data']['children']:
+                        p = child['data']
                         
+                        # Xử lý thumbnail giống code gốc
+                        thumb = ''
+                        if 'thumbnail' in p and p['thumbnail'].startswith('http'):
+                            thumb = p['thumbnail']
+                        elif 'preview' in p and 'images' in p['preview']:
+                            thumb = p['preview']['images'][0]['source']['url'].replace('&amp;', '&')
+                        
+                        # Format post giống code gốc + thêm fields của bạn
+                        post = {
+                            'id': p['id'],
+                            'title': p['title'],
+                            'author': p['author'],
+                            'score': p['score'],
+                            'comments_count': p['num_comments'],
+                            'created_utc': p['created_utc'],
+                            'timestamp': p['created_utc'],
+                            'url': f"https://www.reddit.com{p['permalink']}",
+                            'subreddit': subreddit,
+                            'thumbnail': thumb,
+                            'selftext': p.get('selftext', ''),
+                            'upvote_ratio': p.get('upvote_ratio', 0),
+                            'time_str': datetime.fromtimestamp(p['created_utc']).strftime('%H:%M %d/%m'),
+                            'permalink': f"https://www.reddit.com{p['permalink']}"
+                        }
+                        posts.append(post)
+                    return posts
             except Exception as e:
-                print(f"Error fetching from {domain}: {e}")
+                print(f"Error with {domain}: {e}")
                 continue
         
-        return []
-    
-    def _parse_rss_feed(self, rss_content, subreddit):
-        """Parse RSS feed content"""
-        try:
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(rss_content)
-            
-            posts = []
-            for item in root.findall('.//item'):
-                try:
-                    title = item.find('title').text if item.find('title') is not None else 'No Title'
-                    link = item.find('link').text if item.find('link') is not None else ''
-                    
-                    post_id = ''
-                    if '/comments/' in link:
-                        post_id = link.split('/comments/')[1].split('/')[0]
-                    
-                    author = 'Unknown'
-                    author_elem = item.find('{http://purl.org/dc/elements/1.1/}creator')
-                    if author_elem is not None:
-                        author = author_elem.text
-                    
-                    post = {
-                        'id': post_id or f"rss_{len(posts)}",
-                        'title': title,
-                        'url': link,
-                        'subreddit': subreddit,
-                        'author': author,
-                        'score': 0,
-                        'comments_count': 0,
-                        'created_utc': time.time(),
-                        'timestamp': time.time(),
-                        'thumbnail': None,
-                        'selftext': '',
-                        'upvote_ratio': 0,
-                        'time_str': datetime.now().strftime('%H:%M %d/%m')
-                    }
-                    posts.append(post)
-                except:
-                    continue
-            
-            return posts
-            
-        except Exception as e:
-            print(f"RSS parse error: {e}")
-            return []
+        # Fallback: Thử RSS nếu JSON fail
+        return self._fetch_rss_feed(subreddit, limit)
     
     def _fetch_rss_feed(self, subreddit, limit):
-        """Fallback sử dụng RSS feed"""
+        """Fallback dùng RSS feed (giữ nguyên của bạn)"""
         try:
-            # Thêm format=xml vào RSS URL
             rss_url = f"https://www.reddit.com/r/{subreddit}/hot.rss?format=xml"
-            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
-            headers = {
-                'User-Agent': f'{self.user_agent_base}_{random_suffix}'
-            }
-            
-            response = requests.get(rss_url, headers=headers, timeout=10)
+            response = requests.get(rss_url, headers=self.headers, timeout=10)
             if response.status_code == 200:
-                feed = feedparser.parse(response.text)
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(response.text)
+                
                 posts = []
-                for entry in feed.entries[:limit]:
-                    post = {
-                        'id': entry.id.split('/')[-1] if hasattr(entry, 'id') else f"rss_{len(posts)}",
-                        'title': entry.title if hasattr(entry, 'title') else 'No Title',
-                        'url': entry.link if hasattr(entry, 'link') else '',
-                        'subreddit': subreddit,
-                        'author': entry.author if hasattr(entry, 'author') else 'Unknown',
-                        'score': 0,
-                        'comments_count': 0,
-                        'created_utc': time.mktime(entry.updated_parsed) if hasattr(entry, 'updated_parsed') else time.time(),
-                        'timestamp': time.mktime(entry.updated_parsed) if hasattr(entry, 'updated_parsed') else time.time(),
-                        'thumbnail': None,
-                        'selftext': '',
-                        'upvote_ratio': 0,
-                        'time_str': datetime.now().strftime('%H:%M %d/%m')
-                    }
-                    posts.append(post)
+                for item in root.findall('.//item')[:limit]:
+                    try:
+                        title = item.find('title').text if item.find('title') is not None else 'No Title'
+                        link = item.find('link').text if item.find('link') is not None else ''
+                        
+                        post_id = ''
+                        if '/comments/' in link:
+                            post_id = link.split('/comments/')[1].split('/')[0]
+                        
+                        author = 'Unknown'
+                        author_elem = item.find('{http://purl.org/dc/elements/1.1/}creator')
+                        if author_elem is not None:
+                            author = author_elem.text
+                        
+                        post = {
+                            'id': post_id or f"rss_{len(posts)}",
+                            'title': title,
+                            'url': link,
+                            'subreddit': subreddit,
+                            'author': author,
+                            'score': 0,
+                            'comments_count': 0,
+                            'created_utc': time.time(),
+                            'timestamp': time.time(),
+                            'thumbnail': None,
+                            'selftext': '',
+                            'upvote_ratio': 0,
+                            'time_str': datetime.now().strftime('%H:%M %d/%m'),
+                            'permalink': link
+                        }
+                        posts.append(post)
+                    except:
+                        continue
                 return posts
         except:
             pass
         return []
     
-    def _parse_posts(self, posts_data, subreddit):
-        """Parse dữ liệu bài viết từ JSON response"""
-        posts = []
-        for child in posts_data:
-            p = child['data']
-            try:
-                thumb = None
-                if p.get('thumbnail') and p['thumbnail'].startswith('http'):
-                    thumb = p['thumbnail']
-                elif p.get('preview'):
-                    try:
-                        thumb = p['preview']['images'][0]['source']['url'].replace('&amp;', '&')
-                    except:
-                        pass
-                
-                post = {
-                    'id': p['id'],
-                    'title': p.get('title', 'No Title'),
-                    'url': f"https://www.reddit.com{p['permalink']}",
-                    'subreddit': subreddit,
-                    'author': p.get('author', '[deleted]'),
-                    'score': p.get('score', 0),
-                    'comments_count': p.get('num_comments', 0),
-                    'created_utc': p.get('created_utc', time.time()),
-                    'timestamp': p.get('created_utc', time.time()),
-                    'thumbnail': thumb,
-                    'selftext': p.get('selftext', ''),
-                    'upvote_ratio': p.get('upvote_ratio', 0),
-                    'time_str': datetime.fromtimestamp(p.get('created_utc', time.time())).strftime('%H:%M %d/%m')
-                }
-                posts.append(post)
-            except Exception:
-                continue
-        return posts
+    def analyze_trends(self, posts):
+        """Phân tích trends từ posts - GIỐNG CODE GỐC"""
+        if not posts: 
+            return {}
+        
+        stats = {}
+        for p in posts:
+            sub = p['subreddit']
+            if sub not in stats: 
+                stats[sub] = {'count': 0, 'total_score': 0, 'total_comments': 0}
+            stats[sub]['count'] += 1
+            stats[sub]['total_score'] += p['score']
+            stats[sub]['total_comments'] += p['comments_count']
+        
+        return stats
 
 # FORECAST ENGINE NÂNG CAO
 class AdvancedForecastEngine:
