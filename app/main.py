@@ -1,4 +1,4 @@
-# app/main.py - PHIÊN BẢN FALLBACK TỰ ĐỘNG HOÀN CHỈNH
+# app/main.py - PHIÊN BẢN ĐÃ SỬA LOGIC HOÀN CHỈNH
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,14 +11,29 @@ import os
 import sqlite3
 import hashlib
 import feedparser
-from textblob import TextBlob
-from collections import Counter
 import json
 import plotly.graph_objects as go
 import plotly.express as px
 import io
 import base64
 import tempfile
+
+# --- THÊM IMPORT CHO NLTK ---
+import nltk
+import random
+import string
+from threading import Lock
+
+# Cấu hình NLTK
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+    nltk.download('brown')
+    nltk.download('punkt_tab')  # Gói mới cho NLTK bản gần đây
+
+from textblob import TextBlob
+from collections import Counter
 
 # --- 1. SETUP ENVIRONMENT ---
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -335,8 +350,10 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. DATABASE MANAGER (SQLITE - LOCAL)
+# 2. DATABASE MANAGER (SQLITE - LOCAL) với thread safety
 # ==========================================
+db_lock = Lock()
+
 class DBManager:
     def __init__(self, db_name="reddit_insider.db"):
         # Sử dụng temp directory cho Streamlit Cloud
@@ -350,120 +367,133 @@ class DBManager:
         self.create_tables()
 
     def create_tables(self):
-        c = self.conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS users 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS groups 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, subreddit TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS history 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, title TEXT, url TEXT, timestamp TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS trend_cache 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, subreddit TEXT, data TEXT, 
-                      last_updated TEXT, UNIQUE(subreddit))''')
-        self.conn.commit()
+        with db_lock:
+            c = self.conn.cursor()
+            c.execute('''CREATE TABLE IF NOT EXISTS users 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS groups 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, subreddit TEXT)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS history 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, title TEXT, url TEXT, timestamp TEXT)''')
+            c.execute('''CREATE TABLE IF NOT EXISTS trend_cache 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, subreddit TEXT, data TEXT, 
+                          last_updated TEXT, UNIQUE(subreddit))''')
+            self.conn.commit()
 
     def register(self, username, password):
-        c = self.conn.cursor()
-        hashed = hashlib.sha256(password.encode()).hexdigest()
-        try:
-            c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
-            self.conn.commit()
-            return True
-        except: return False
+        with db_lock:
+            c = self.conn.cursor()
+            hashed = hashlib.sha256(password.encode()).hexdigest()
+            try:
+                c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
+                self.conn.commit()
+                return True
+            except: 
+                return False
 
     def login(self, username, password):
-        c = self.conn.cursor()
-        hashed = hashlib.sha256(password.encode()).hexdigest()
-        c.execute("SELECT id, username FROM users WHERE username=? AND password=?", (username, hashed))
-        return c.fetchone()
+        with db_lock:
+            c = self.conn.cursor()
+            hashed = hashlib.sha256(password.encode()).hexdigest()
+            c.execute("SELECT id, username FROM users WHERE username=? AND password=?", (username, hashed))
+            return c.fetchone()
 
     def add_group(self, user_id, subreddit):
-        c = self.conn.cursor()
-        clean_sub = subreddit.replace('r/', '').replace('/', '').strip()
-        if not clean_sub: return False
-        c.execute("SELECT id FROM groups WHERE user_id=? AND subreddit=?", (user_id, clean_sub))
-        if not c.fetchone():
-            c.execute("INSERT INTO groups (user_id, subreddit) VALUES (?, ?)", (user_id, clean_sub))
-            self.conn.commit()
-            return True
-        return False
+        with db_lock:
+            c = self.conn.cursor()
+            clean_sub = subreddit.replace('r/', '').replace('/', '').strip()
+            if not clean_sub: 
+                return False
+            c.execute("SELECT id FROM groups WHERE user_id=? AND subreddit=?", (user_id, clean_sub))
+            if not c.fetchone():
+                c.execute("INSERT INTO groups (user_id, subreddit) VALUES (?, ?)", (user_id, clean_sub))
+                self.conn.commit()
+                return True
+            return False
 
     def get_groups(self, user_id):
-        c = self.conn.cursor()
-        c.execute("SELECT id, subreddit FROM groups WHERE user_id=?", (user_id,))
-        return [{'id': r[0], 'subreddit': r[1]} for r in c.fetchall()]
+        with db_lock:
+            c = self.conn.cursor()
+            c.execute("SELECT id, subreddit FROM groups WHERE user_id=?", (user_id,))
+            return [{'id': r[0], 'subreddit': r[1]} for r in c.fetchall()]
 
     def delete_group(self, group_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM groups WHERE id=?", (group_id,))
-        self.conn.commit()
-
-    def add_history(self, user_id, title, url):
-        c = self.conn.cursor()
-        ts = datetime.now().strftime("%d/%m %H:%M")
-        c.execute("SELECT id FROM history WHERE user_id=? AND url=? ORDER BY id DESC LIMIT 1", (user_id, url))
-        if not c.fetchone():
-            c.execute("INSERT INTO history (user_id, title, url, timestamp) VALUES (?, ?, ?, ?)", 
-                      (user_id, title, url, ts))
+        with db_lock:
+            c = self.conn.cursor()
+            c.execute("DELETE FROM groups WHERE id=?", (group_id,))
             self.conn.commit()
 
+    def add_history(self, user_id, title, url):
+        with db_lock:
+            c = self.conn.cursor()
+            ts = datetime.now().strftime("%d/%m %H:%M")
+            c.execute("SELECT id FROM history WHERE user_id=? AND url=? ORDER BY id DESC LIMIT 1", (user_id, url))
+            if not c.fetchone():
+                c.execute("INSERT INTO history (user_id, title, url, timestamp) VALUES (?, ?, ?, ?)", 
+                          (user_id, title, url, ts))
+                self.conn.commit()
+
     def get_history(self, user_id):
-        c = self.conn.cursor()
-        c.execute("SELECT id, title, url, timestamp FROM history WHERE user_id=? ORDER BY id DESC LIMIT 20", (user_id,))
-        return [{'id': r[0], 'title': r[1], 'url': r[2], 'timestamp': r[3]} for r in c.fetchall()]
+        with db_lock:
+            c = self.conn.cursor()
+            c.execute("SELECT id, title, url, timestamp FROM history WHERE user_id=? ORDER BY id DESC LIMIT 20", (user_id,))
+            return [{'id': r[0], 'title': r[1], 'url': r[2], 'timestamp': r[3]} for r in c.fetchall()]
 
     def delete_history(self, hist_id):
-        c = self.conn.cursor()
-        c.execute("DELETE FROM history WHERE id=?", (hist_id,))
-        self.conn.commit()
+        with db_lock:
+            c = self.conn.cursor()
+            c.execute("DELETE FROM history WHERE id=?", (hist_id,))
+            self.conn.commit()
 
     def cache_trend_data(self, subreddit, data):
         """Cache kết quả phân tích trend"""
-        c = self.conn.cursor()
-        ts = datetime.now().isoformat()
-        
-        try:
-            def json_serializer(obj):
-                if isinstance(obj, (datetime, pd.Timestamp)):
-                    return obj.isoformat()
-                elif isinstance(obj, (np.int64, np.float64)):
-                    return int(obj) if isinstance(obj, np.int64) else float(obj)
-                elif hasattr(obj, '__dict__'):
+        with db_lock:
+            c = self.conn.cursor()
+            ts = datetime.now().isoformat()
+            
+            try:
+                def json_serializer(obj):
+                    if isinstance(obj, (datetime, pd.Timestamp)):
+                        return obj.isoformat()
+                    elif isinstance(obj, (np.int64, np.float64)):
+                        return int(obj) if isinstance(obj, np.int64) else float(obj)
+                    elif hasattr(obj, '__dict__'):
+                        return str(obj)
                     return str(obj)
-                return str(obj)
-            
-            json_data = json.dumps(data, default=json_serializer, ensure_ascii=False)
-            
-            c.execute(
-                "INSERT OR REPLACE INTO trend_cache (subreddit, data, last_updated) VALUES (?, ?, ?)",
-                (subreddit, json_data, ts)
-            )
-            self.conn.commit()
-            return True
-            
-        except Exception as e:
-            print(f"❌ Cache error: {e}")
-            return False
+                
+                json_data = json.dumps(data, default=json_serializer, ensure_ascii=False)
+                
+                c.execute(
+                    "INSERT OR REPLACE INTO trend_cache (subreddit, data, last_updated) VALUES (?, ?, ?)",
+                    (subreddit, json_data, ts)
+                )
+                self.conn.commit()
+                return True
+                
+            except Exception as e:
+                print(f"❌ Cache error: {e}")
+                return False
 
     def get_cached_trend_data(self, subreddit, max_age_minutes=30):
         """Lấy dữ liệu trend từ cache"""
-        c = self.conn.cursor()
-        cutoff_time = (datetime.now() - timedelta(minutes=max_age_minutes)).isoformat()
-        
-        c.execute(
-            "SELECT data FROM trend_cache WHERE subreddit=? AND last_updated > ?",
-            (subreddit, cutoff_time)
-        )
-        
-        result = c.fetchone()
-        if result:
-            try:
-                loaded_data = json.loads(result[0], object_hook=self._json_date_hook)
-                return loaded_data
-            except (json.JSONDecodeError, TypeError) as e:
-                print(f"❌ JSON decode error for cached data: {e}")
-                return None
-        return None
+        with db_lock:
+            c = self.conn.cursor()
+            cutoff_time = (datetime.now() - timedelta(minutes=max_age_minutes)).isoformat()
+            
+            c.execute(
+                "SELECT data FROM trend_cache WHERE subreddit=? AND last_updated > ?",
+                (subreddit, cutoff_time)
+            )
+            
+            result = c.fetchone()
+            if result:
+                try:
+                    loaded_data = json.loads(result[0], object_hook=self._json_date_hook)
+                    return loaded_data
+                except (json.JSONDecodeError, TypeError) as e:
+                    print(f"❌ JSON decode error for cached data: {e}")
+                    return None
+            return None
     
     def _json_date_hook(self, dct):
         """Hàm helper để chuyển đổi chuỗi ISO thành datetime"""
@@ -478,15 +508,17 @@ class DBManager:
 db = DBManager()
 
 # ==========================================
-# 3. CORE LOGIC VỚI FALLBACK TỰ ĐỘNG
+# 3. CORE LOGIC VỚI FALLBACK TỰ ĐỘNG - ĐÃ SỬA
 # ==========================================
-
 class RedditLoader:
     def __init__(self):
         self.base_url = "https://www.reddit.com"
-        # USER-AGENT THEO FORMAT REDDIT YÊU CẦU - THAY YOUR_USERNAME Ở ĐÂY
+        # TẠO USER-AGENT NGẪU NHIÊN ĐỂ TRÁNH BỊ CHẶN
+        random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        self.user_agent_base = f'web:reddit_insider_ai_{random_id}:v1.0.0'
+        
         self.headers = {
-            'User-Agent': 'web:reddit_insider_ai:v1.0.0 (by /u/random_mys)',
+            'User-Agent': self.user_agent_base,
             'Accept': 'application/json',
             'Accept-Language': 'en-US,en;q=0.9',
             'DNT': '1',
@@ -500,6 +532,10 @@ class RedditLoader:
             return None, f"Đã thử {retries} lần nhưng không thành công"
         
         try:
+            # Thay đổi User-Agent cho mỗi lần thử
+            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+            self.session.headers['User-Agent'] = f'{self.user_agent_base}_{random_suffix}'
+            
             if not url.startswith('http'):
                 url = 'https://' + url
             
@@ -516,7 +552,7 @@ class RedditLoader:
                     url = url.replace('www.reddit.com', 'old.reddit.com')
                     url = self._normalize_url(url)
             elif current_retry == 2:
-                # Thử RSS feed
+                # Thử RSS feed với format=xml
                 url = self._convert_to_rss_url(url)
                 if not url:
                     return None, "Không thể chuyển sang RSS"
@@ -524,7 +560,7 @@ class RedditLoader:
             response = self.session.get(url, timeout=15, allow_redirects=True)
             
             if response.status_code == 200:
-                if url.endswith('.rss'):
+                if '.rss' in url or 'format=xml' in url:
                     # Parse RSS
                     return self._parse_rss_data(response.text, url)
                 else:
@@ -574,16 +610,16 @@ class RedditLoader:
         return url
     
     def _convert_to_rss_url(self, url):
-        """Chuyển URL sang RSS format"""
+        """Chuyển URL sang RSS format với ?format=xml"""
         try:
             if '/comments/' in url:
                 match = re.search(r'/r/([^/]+)/comments/([^/]+)', url)
                 if match:
                     subreddit, post_id = match.groups()
-                    return f"https://www.reddit.com/r/{subreddit}/comments/{post_id}.rss"
+                    return f"https://www.reddit.com/r/{subreddit}/comments/{post_id}.rss?format=xml"
             elif '/r/' in url:
                 url = url.replace('.json', '').rstrip('/')
-                return f"{url}/hot.rss"
+                return f"{url}.rss?format=xml"
         except:
             pass
         return None
@@ -770,8 +806,9 @@ class RedditLoader:
 class TrendingManager:
     def __init__(self):
         self.mirrors = ["https://www.reddit.com", "https://old.reddit.com"]
-        # USER-AGENT CHO TRENDING - THAY YOUR_USERNAME Ở ĐÂY
-        self.user_agent = 'web:reddit_trending_fetcher:v1.0.0 (by /u/random_mys)'
+        # USER-AGENT CHO TRENDING - TẠO NGẪU NHIÊN
+        random_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        self.user_agent_base = f'web:reddit_trending_fetcher_{random_id}:v1.0.0'
         
     def fetch_feed(self, subreddits, limit=15):
         """Lấy dữ liệu bài viết từ subreddits với fallback tự động"""
@@ -797,11 +834,14 @@ class TrendingManager:
         """Thử lấy data qua các mirrors"""
         for domain in self.mirrors:
             try:
-                url = f"{domain}/r/{subreddit}/hot.json?limit={limit}"
+                # Tạo User-Agent ngẫu nhiên cho mỗi request
+                random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
                 headers = {
-                    'User-Agent': self.user_agent,
+                    'User-Agent': f'{self.user_agent_base}_{random_suffix}',
                     'Accept': 'application/json'
                 }
+                
+                url = f"{domain}/r/{subreddit}/hot.json?limit={limit}"
                 resp = requests.get(url, headers=headers, timeout=10)
                 
                 if resp.status_code == 200:
@@ -809,7 +849,7 @@ class TrendingManager:
                     return self._parse_posts(data['data']['children'], subreddit)
                 elif resp.status_code == 403:
                     # Thử RSS trên domain này
-                    rss_url = f"{domain}/r/{subreddit}/hot.rss"
+                    rss_url = f"{domain}/r/{subreddit}/hot.rss?format=xml"
                     rss_resp = requests.get(rss_url, headers=headers, timeout=10)
                     if rss_resp.status_code == 200:
                         return self._parse_rss_feed(rss_resp.text, subreddit)
@@ -869,28 +909,38 @@ class TrendingManager:
     def _fetch_rss_feed(self, subreddit, limit):
         """Fallback sử dụng RSS feed"""
         try:
-            feed = feedparser.parse(f"https://www.reddit.com/r/{subreddit}/hot.rss")
-            posts = []
-            for entry in feed.entries[:limit]:
-                post = {
-                    'id': entry.id.split('/')[-1],
-                    'title': entry.title,
-                    'url': entry.link,
-                    'subreddit': subreddit,
-                    'author': entry.author,
-                    'score': 0,
-                    'comments_count': 0,
-                    'created_utc': time.mktime(entry.updated_parsed),
-                    'timestamp': time.mktime(entry.updated_parsed),
-                    'thumbnail': None,
-                    'selftext': '',
-                    'upvote_ratio': 0,
-                    'time_str': datetime.fromtimestamp(time.mktime(entry.updated_parsed)).strftime('%H:%M %d/%m')
-                }
-                posts.append(post)
-            return posts
+            # Thêm format=xml vào RSS URL
+            rss_url = f"https://www.reddit.com/r/{subreddit}/hot.rss?format=xml"
+            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+            headers = {
+                'User-Agent': f'{self.user_agent_base}_{random_suffix}'
+            }
+            
+            response = requests.get(rss_url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                feed = feedparser.parse(response.text)
+                posts = []
+                for entry in feed.entries[:limit]:
+                    post = {
+                        'id': entry.id.split('/')[-1] if hasattr(entry, 'id') else f"rss_{len(posts)}",
+                        'title': entry.title if hasattr(entry, 'title') else 'No Title',
+                        'url': entry.link if hasattr(entry, 'link') else '',
+                        'subreddit': subreddit,
+                        'author': entry.author if hasattr(entry, 'author') else 'Unknown',
+                        'score': 0,
+                        'comments_count': 0,
+                        'created_utc': time.mktime(entry.updated_parsed) if hasattr(entry, 'updated_parsed') else time.time(),
+                        'timestamp': time.mktime(entry.updated_parsed) if hasattr(entry, 'updated_parsed') else time.time(),
+                        'thumbnail': None,
+                        'selftext': '',
+                        'upvote_ratio': 0,
+                        'time_str': datetime.now().strftime('%H:%M %d/%m')
+                    }
+                    posts.append(post)
+                return posts
         except:
-            return []
+            pass
+        return []
     
     def _parse_posts(self, posts_data, subreddit):
         """Parse dữ liệu bài viết từ JSON response"""
@@ -1715,7 +1765,8 @@ def login_page():
                     st.session_state.authenticated = True
                     st.session_state.page = "Dashboard"
                     st.rerun()
-                else: st.error("Sai tên đăng nhập hoặc mật khẩu")
+                else: 
+                    st.error("Sai tên đăng nhập hoặc mật khẩu")
     with t2:
         with st.form("reg"):
             u = st.text_input("Tên người dùng mới")
@@ -1727,7 +1778,8 @@ def login_page():
                     st.error("Mật khẩu phải có ít nhất 6 ký tự")
                 elif db.register(u, p): 
                     st.success("Đăng ký thành công! Hãy đăng nhập.")
-                else: st.error("Tên người dùng đã tồn tại")
+                else: 
+                    st.error("Tên người dùng đã tồn tại")
 
 def dashboard_page():
     user = st.session_state.user
@@ -2256,5 +2308,6 @@ def main():
             analysis_page()
             display_analysis_results()
 
+# Chạy ứng dụng
 if __name__ == "__main__":
     main()
