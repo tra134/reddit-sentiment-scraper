@@ -1,4 +1,4 @@
-# app/main.py
+# app/main.py - PHIÊN BẢN FALLBACK TỰ ĐỘNG HOÀN CHỈNH
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -18,6 +18,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import io
 import base64
+import tempfile
 
 # --- 1. SETUP ENVIRONMENT ---
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -338,7 +339,14 @@ st.set_page_config(
 # ==========================================
 class DBManager:
     def __init__(self, db_name="reddit_insider.db"):
-        self.conn = sqlite3.connect(db_name, check_same_thread=False)
+        # Sử dụng temp directory cho Streamlit Cloud
+        if os.environ.get('STREAMLIT_CLOUD'):
+            temp_dir = tempfile.gettempdir()
+            db_path = os.path.join(temp_dir, db_name)
+        else:
+            db_path = db_name
+            
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.create_tables()
 
     def create_tables(self):
@@ -470,55 +478,78 @@ class DBManager:
 db = DBManager()
 
 # ==========================================
-# 3. CORE LOGIC
+# 3. CORE LOGIC VỚI FALLBACK TỰ ĐỘNG
 # ==========================================
 
 class RedditLoader:
     def __init__(self):
         self.base_url = "https://www.reddit.com"
+        # USER-AGENT THEO FORMAT REDDIT YÊU CẦU - THAY YOUR_USERNAME Ở ĐÂY
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'web:reddit_insider_ai:v1.0.0 (by /u/random_mys)',
             'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'DNT': '1',
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
     
-    def fetch_data(self, url, retries=2, current_retry=0):
-        """Fetch data với retry logic"""
+    def fetch_data(self, url, retries=3, current_retry=0):
+        """Fetch data với fallback tự động ẩn"""
         if current_retry >= retries:
             return None, f"Đã thử {retries} lần nhưng không thành công"
         
         try:
-            # FIX: Xử lý URL Reddit đúng cách
             if not url.startswith('http'):
-                return None, "URL không hợp lệ"
+                url = 'https://' + url
             
-            # Kiểm tra xem URL có phải là Reddit không
             if 'reddit.com' not in url:
                 return None, "URL không phải là Reddit"
             
-            # Chuẩn hóa URL
-            url = self._normalize_url(url)
+            # FALLBACK TỰ ĐỘNG: Strategy chain
+            if current_retry == 0:
+                # Thử JSON API đầu tiên
+                url = self._normalize_url(url)
+            elif current_retry == 1:
+                # Thử old.reddit.com
+                if 'www.reddit.com' in url:
+                    url = url.replace('www.reddit.com', 'old.reddit.com')
+                    url = self._normalize_url(url)
+            elif current_retry == 2:
+                # Thử RSS feed
+                url = self._convert_to_rss_url(url)
+                if not url:
+                    return None, "Không thể chuyển sang RSS"
             
             response = self.session.get(url, timeout=15, allow_redirects=True)
             
             if response.status_code == 200:
-                try:
-                    data = response.json()
-                    return self._parse_reddit_data(data, url)
-                except json.JSONDecodeError:
-                    return self._parse_html_fallback(response.text, url)
+                if url.endswith('.rss'):
+                    # Parse RSS
+                    return self._parse_rss_data(response.text, url)
+                else:
+                    try:
+                        data = response.json()
+                        return self._parse_reddit_data(data, url)
+                    except json.JSONDecodeError:
+                        return self._parse_html_fallback(response.text, url)
+            
+            elif response.status_code == 403:
+                # Tự động thử phương thức khác
+                time.sleep(1)
+                return self.fetch_data(url, retries, current_retry + 1)
             
             elif response.status_code == 429:
-                if current_retry < 1:
+                if current_retry < 2:
                     time.sleep(3)
                     return self.fetch_data(url, retries, current_retry + 1)
                 else:
                     return None, "Reddit đang chặn yêu cầu. Vui lòng thử lại sau 1 phút."
             
             elif response.status_code == 404:
-                # Thử các biến thể URL
-                return self._try_url_variants(url)
+                if current_retry < retries - 1:
+                    return self.fetch_data(url, retries, current_retry + 1)
+                return None, "Không tìm thấy bài viết"
             
             else:
                 return None, f"Lỗi HTTP {response.status_code}"
@@ -530,55 +561,75 @@ class RedditLoader:
     
     def _normalize_url(self, url):
         """Chuẩn hóa URL Reddit"""
-        # Loại bỏ query parameters không cần thiết
         if '?' in url:
             url = url.split('?')[0]
         
-        # Đảm bảo URL kết thúc đúng
         url = url.rstrip('/')
         
-        # Nếu là bài viết, thêm .json
-        if '/comments/' in url and not url.endswith('.json'):
+        if '/comments/' in url and not url.endswith('.json') and not url.endswith('.rss'):
             url = f"{url}.json"
-        
-        # Nếu là subreddit, thêm .json
-        elif '/r/' in url and not url.endswith('.json') and '/comments/' not in url:
+        elif '/r/' in url and not url.endswith('.json') and not url.endswith('.rss') and '/comments/' not in url:
             url = f"{url}.json"
         
         return url
     
-    def _try_url_variants(self, url):
-        """Thử các biến thể URL khi 404"""
-        variants = []
-        
-        # Thêm old.reddit.com
-        if 'www.reddit.com' in url:
-            variants.append(url.replace('www.reddit.com', 'old.reddit.com'))
-        
-        # Thử không có .json
-        if url.endswith('.json'):
-            variants.append(url[:-5])
-        
-        # Thử API trực tiếp
-        match = re.search(r'/comments/([^/]+)', url)
-        if match:
-            post_id = match.group(1)
-            variants.append(f"https://www.reddit.com/api/info.json?id=t3_{post_id}")
-        
-        # Thử từng variant
-        for variant in variants:
-            try:
-                response = self.session.get(variant, timeout=10)
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        return self._parse_reddit_data(data, variant)
-                    except json.JSONDecodeError:
-                        return self._parse_html_fallback(response.text, variant)
-            except:
-                continue
-        
-        return None, "Không tìm thấy bài viết. Kiểm tra lại URL."
+    def _convert_to_rss_url(self, url):
+        """Chuyển URL sang RSS format"""
+        try:
+            if '/comments/' in url:
+                match = re.search(r'/r/([^/]+)/comments/([^/]+)', url)
+                if match:
+                    subreddit, post_id = match.groups()
+                    return f"https://www.reddit.com/r/{subreddit}/comments/{post_id}.rss"
+            elif '/r/' in url:
+                url = url.replace('.json', '').rstrip('/')
+                return f"{url}/hot.rss"
+        except:
+            pass
+        return None
+    
+    def _parse_rss_data(self, rss_content, url):
+        """Parse RSS data"""
+        try:
+            import xml.etree.ElementTree as ET
+            
+            # Parse XML
+            root = ET.fromstring(rss_content)
+            
+            # Tìm title
+            title = ""
+            for item in root.findall('.//item'):
+                title_elem = item.find('title')
+                if title_elem is not None:
+                    title = title_elem.text
+                    break
+            
+            # Tìm subreddit
+            subreddit = "unknown"
+            match = re.search(r'/r/([^/]+)', url)
+            if match:
+                subreddit = match.group(1)
+            
+            meta = {
+                'title': title or 'No Title',
+                'subreddit': subreddit,
+                'score': 0,
+                'author': 'Unknown',
+                'content': 'Content from RSS feed',
+                'upvote_ratio': 0,
+                'created_utc': time.time(),
+                'created_time': 'Không rõ',
+                'num_comments': 0,
+                'permalink': url,
+                'url': url,
+                'id': 'rss_' + str(hash(url) % 10000)
+            }
+            
+            return {'meta': meta, 'comments': []}, None
+            
+        except Exception as e:
+            print(f"RSS parse error: {e}")
+            return self._parse_html_fallback(rss_content, url)
     
     def _parse_reddit_data(self, data, original_url):
         """Parse dữ liệu Reddit JSON"""
@@ -586,7 +637,6 @@ class RedditLoader:
             meta = {}
             comments = []
             
-            # CASE 1: Standard Reddit API response
             if isinstance(data, list) and len(data) >= 2:
                 post_part = data[0]
                 if ('data' in post_part and 
@@ -603,7 +653,6 @@ class RedditLoader:
                         comments_data = comments_part['data']['children']
                         comments = self._extract_comments(comments_data)
                 
-            # CASE 2: Single object
             elif isinstance(data, dict):
                 if 'data' in data and 'children' in data['data']:
                     children = data['data']['children']
@@ -694,8 +743,6 @@ class RedditLoader:
     def _parse_html_fallback(self, html, url):
         """Fallback parse từ HTML"""
         try:
-            import re
-            
             title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
             title = title_match.group(1).strip() if title_match else 'No Title'
             title = title.replace(' : reddit', '').replace(' - Reddit', '').strip()
@@ -723,40 +770,127 @@ class RedditLoader:
 class TrendingManager:
     def __init__(self):
         self.mirrors = ["https://www.reddit.com", "https://old.reddit.com"]
+        # USER-AGENT CHO TRENDING - THAY YOUR_USERNAME Ở ĐÂY
+        self.user_agent = 'web:reddit_trending_fetcher:v1.0.0 (by /u/random_mys)'
         
     def fetch_feed(self, subreddits, limit=15):
-        """Lấy dữ liệu bài viết từ subreddits"""
+        """Lấy dữ liệu bài viết từ subreddits với fallback tự động"""
         results = []
         
         for sub in subreddits:
-            success = False
-            for domain in self.mirrors:
-                try:
-                    url = f"{domain}/r/{sub.strip()}/hot.json?limit={limit}"
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/json'
-                    }
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        posts = self._parse_posts(data['data']['children'], sub.strip())
-                        results.extend(posts)
-                        success = True
-                        break
-                except Exception:
-                    continue
+            sub = sub.strip().replace('r/', '').replace('/', '')
             
-            if not success:
-                try:
-                    posts = self._fetch_rss_feed(sub.strip(), limit)
-                    results.extend(posts)
-                except:
-                    pass
+            # Strategy 1: Thử các mirrors
+            posts = self._try_mirrors(sub, limit)
+            
+            # Strategy 2: Thử RSS feed
+            if not posts:
+                posts = self._fetch_rss_feed(sub, limit)
+            
+            results.extend(posts)
         
         # Sắp xếp theo thời gian
         results.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
         return results
+    
+    def _try_mirrors(self, subreddit, limit):
+        """Thử lấy data qua các mirrors"""
+        for domain in self.mirrors:
+            try:
+                url = f"{domain}/r/{subreddit}/hot.json?limit={limit}"
+                headers = {
+                    'User-Agent': self.user_agent,
+                    'Accept': 'application/json'
+                }
+                resp = requests.get(url, headers=headers, timeout=10)
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return self._parse_posts(data['data']['children'], subreddit)
+                elif resp.status_code == 403:
+                    # Thử RSS trên domain này
+                    rss_url = f"{domain}/r/{subreddit}/hot.rss"
+                    rss_resp = requests.get(rss_url, headers=headers, timeout=10)
+                    if rss_resp.status_code == 200:
+                        return self._parse_rss_feed(rss_resp.text, subreddit)
+                        
+            except Exception as e:
+                print(f"Error fetching from {domain}: {e}")
+                continue
+        
+        return []
+    
+    def _parse_rss_feed(self, rss_content, subreddit):
+        """Parse RSS feed content"""
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(rss_content)
+            
+            posts = []
+            for item in root.findall('.//item'):
+                try:
+                    title = item.find('title').text if item.find('title') is not None else 'No Title'
+                    link = item.find('link').text if item.find('link') is not None else ''
+                    
+                    post_id = ''
+                    if '/comments/' in link:
+                        post_id = link.split('/comments/')[1].split('/')[0]
+                    
+                    author = 'Unknown'
+                    author_elem = item.find('{http://purl.org/dc/elements/1.1/}creator')
+                    if author_elem is not None:
+                        author = author_elem.text
+                    
+                    post = {
+                        'id': post_id or f"rss_{len(posts)}",
+                        'title': title,
+                        'url': link,
+                        'subreddit': subreddit,
+                        'author': author,
+                        'score': 0,
+                        'comments_count': 0,
+                        'created_utc': time.time(),
+                        'timestamp': time.time(),
+                        'thumbnail': None,
+                        'selftext': '',
+                        'upvote_ratio': 0,
+                        'time_str': datetime.now().strftime('%H:%M %d/%m')
+                    }
+                    posts.append(post)
+                except:
+                    continue
+            
+            return posts
+            
+        except Exception as e:
+            print(f"RSS parse error: {e}")
+            return []
+    
+    def _fetch_rss_feed(self, subreddit, limit):
+        """Fallback sử dụng RSS feed"""
+        try:
+            feed = feedparser.parse(f"https://www.reddit.com/r/{subreddit}/hot.rss")
+            posts = []
+            for entry in feed.entries[:limit]:
+                post = {
+                    'id': entry.id.split('/')[-1],
+                    'title': entry.title,
+                    'url': entry.link,
+                    'subreddit': subreddit,
+                    'author': entry.author,
+                    'score': 0,
+                    'comments_count': 0,
+                    'created_utc': time.mktime(entry.updated_parsed),
+                    'timestamp': time.mktime(entry.updated_parsed),
+                    'thumbnail': None,
+                    'selftext': '',
+                    'upvote_ratio': 0,
+                    'time_str': datetime.fromtimestamp(time.mktime(entry.updated_parsed)).strftime('%H:%M %d/%m')
+                }
+                posts.append(post)
+            return posts
+        except:
+            return []
     
     def _parse_posts(self, posts_data, subreddit):
         """Parse dữ liệu bài viết từ JSON response"""
@@ -792,32 +926,6 @@ class TrendingManager:
             except Exception:
                 continue
         return posts
-
-    def _fetch_rss_feed(self, subreddit, limit):
-        """Fallback sử dụng RSS feed"""
-        try:
-            feed = feedparser.parse(f"https://www.reddit.com/r/{subreddit}/hot.rss")
-            posts = []
-            for entry in feed.entries[:limit]:
-                post = {
-                    'id': entry.id.split('/')[-1],
-                    'title': entry.title,
-                    'url': entry.link,
-                    'subreddit': subreddit,
-                    'author': entry.author,
-                    'score': 0,
-                    'comments_count': 0,
-                    'created_utc': time.mktime(entry.updated_parsed),
-                    'timestamp': time.mktime(entry.updated_parsed),
-                    'thumbnail': None,
-                    'selftext': '',
-                    'upvote_ratio': 0,
-                    'time_str': datetime.fromtimestamp(time.mktime(entry.updated_parsed)).strftime('%H:%M %d/%m')
-                }
-                posts.append(post)
-            return posts
-        except:
-            return []
 
 # FORECAST ENGINE NÂNG CAO
 class AdvancedForecastEngine:
@@ -1590,7 +1698,7 @@ def create_visualization(df):
     return fig1, fig2, fig3
 
 # ==========================================
-# 4. PAGE CONTROLLERS - ĐÃ SỬA LỖI URL
+# 4. PAGE CONTROLLERS - GIAO DIỆN ĐƠN GIẢN
 # ==========================================
 
 def login_page():
@@ -1672,7 +1780,7 @@ def dashboard_page():
         st.info("📝 Chưa có lịch sử phân tích nào. Hãy thử phân tích bài viết đầu tiên!")
 
 def analyze_callback(url):
-    """Callback khi click phân tích bài viết - ĐÃ SỬA LỖI"""
+    """Callback khi click phân tích bài viết"""
     if not url or 'reddit.com' not in url:
         st.error("⚠️ URL không hợp lệ. Vui lòng kiểm tra lại.")
         return
@@ -1783,15 +1891,15 @@ def trending_page():
 def analysis_page():
     st.markdown("## 🔗 Phân Tích Bài Viết")
     
-    # URL input đơn giản - ĐÃ XÓA PHẦN URL MẪU
+    # URL input đơn giản - không hiển thị fallback options
     url = st.text_input(
         "URL Reddit:",
         value=st.session_state.get('analyze_url', ""),
         placeholder="https://www.reddit.com/r/...",
-        help="Dán link bài viết Reddit (phải là link công khai, không yêu cầu đăng nhập)"
+        help="Dán link bài viết Reddit bất kỳ"
     )
       
-    # Kiểm tra URL trước khi phân tích
+    # Kiểm tra URL cơ bản
     url_valid = False
     if url:
         if 'reddit.com' not in url:
@@ -1816,7 +1924,7 @@ def analysis_page():
             st.rerun()
 
 def run_analysis(url):
-    """Chạy phân tích bài viết"""
+    """Chạy phân tích bài viết với fallback tự động"""
     with st.status("🔄 Đang phân tích...", expanded=True) as status:
         try:
             loader = RedditLoader()
@@ -1826,15 +1934,21 @@ def run_analysis(url):
             data, err = loader.fetch_data(url)
             
             if err:
-                st.error(f"❌ Lỗi: {err}")
-                
-                # Gợi ý sửa lỗi
-                if "404" in err:
-                    st.info("💡 **Gợi ý:** Kiểm tra xem URL có đúng không, bài viết có thể đã bị xóa hoặc chỉnh sửa.")
-                elif "429" in err:
-                    st.info("💡 **Gợi ý:** Reddit đang chặn yêu cầu. Hãy thử lại sau 1-2 phút.")
-                elif "JSON" in err:
-                    st.info("💡 **Gợi ý:** Kiểm tra định dạng URL, đảm bảo URL Reddit hợp lệ.")
+                # THÔNG BÁO LỖI ĐƠN GIẢN
+                if "403" in err or "chặn" in err:
+                    st.error(f"""
+                    🔒 **Không thể truy cập bài viết**
+                    
+                    Reddit đang chặn truy cập từ server này.
+                    Hệ thống đã tự động thử các phương thức thay thế nhưng không thành công.
+                    
+                    **Đề xuất:**
+                    1. Thử lại sau 1-2 phút
+                    2. Thử bài viết khác
+                    3. Kiểm tra xem bài viết có tồn tại không
+                    """)
+                else:
+                    st.error(f"❌ Lỗi: {err}")
                 
                 status.update(state="error")
                 return
@@ -1863,8 +1977,6 @@ def run_analysis(url):
             
         except Exception as e:
             st.error(f"❌ Lỗi trong quá trình phân tích: {str(e)}")
-            import traceback
-            traceback.print_exc()
             status.update(state="error")
 
 def display_analysis_results():
