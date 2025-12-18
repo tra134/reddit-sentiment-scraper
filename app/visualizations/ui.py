@@ -433,45 +433,35 @@ def _safe_hash_data(data):
     except:
         return "default_key"
 
-def render_trend_analysis(trend_data):
-    """Hiển thị phân tích xu hướng với xử lý lỗi tốt hơn"""
-    
-    if 'error' in trend_data:
-        st.error(f"❌ Lỗi phân tích: {trend_data['error']}")
-        if 'message' in trend_data:
-            st.info(f"💡 {trend_data['message']}")
+def render_trend_analysis(analysis_result):
+    """Hiển thị kết quả phân tích trend"""
+    if not analysis_result:
+        st.warning("Không có dữ liệu phân tích")
         return
-
-    # Kiểm tra dữ liệu bắt buộc
-    if 'subreddit' not in trend_data or 'data_summary' not in trend_data:
-        st.error("⚠️ Dữ liệu phân tích không đầy đủ. Vui lòng thử lại.")
-        return
-
-    st.markdown(f"## 📊 Phân Tích Xu Hướng: r/{trend_data['subreddit']}")
     
-    # Header metrics với stat-box cải tiến
-    col1, col2, col3, col4 = st.columns(4)
+    st.markdown("### 📈 Phân tích xu hướng")
+    
+    # Data summary
+    summary = analysis_result.get('data_summary', {})
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown(f"<div class='stat-box'><div class='stat-val'>{trend_data['data_summary']['total_posts_analyzed']}</div><div class='stat-lbl'>Bài viết</div></div>", unsafe_allow_html=True)
+        st.metric("Bài viết", summary.get('total_posts_analyzed', 0))
     with col2:
-        st.markdown(f"<div class='stat-box'><div class='stat-val'>{trend_data['data_summary']['total_engagement']:,}</div><div class='stat-lbl'>Engagement</div></div>", unsafe_allow_html=True)
+        st.metric("Điểm TB", f"{summary.get('avg_score_per_post', 0):.1f}")
     with col3:
-        st.markdown(f"<div class='stat-box'><div class='stat-val'>{trend_data['data_summary']['total_comments']:,}</div><div class='stat-lbl'>Bình luận</div></div>", unsafe_allow_html=True)
-    with col4:
-        st.markdown(f"<div class='stat-box'><div class='stat-val'>{trend_data['analysis_period_days']}</div><div class='stat-lbl'>Ngày phân tích</div></div>", unsafe_allow_html=True)
-
-    st.markdown("<div class='spacer-md'></div>", unsafe_allow_html=True)
-
-    # Main layout
-    col_left, col_right = st.columns([2, 1])
-
-    with col_left:
-        render_forecast_section(trend_data.get('forecast', {}), trend_data['subreddit'])
-        render_peak_hours(trend_data.get('peak_hours', []), trend_data['subreddit'])
-
-    with col_right:
-        render_top_topics(trend_data.get('top_topics', []), trend_data['subreddit'])
-        render_keywords(trend_data.get('top_keywords', []), trend_data['subreddit'])
+        st.metric("Engagement TB", f"{summary.get('avg_engagement_per_post', 0):.1f}")
+    
+    # Trend direction
+    forecast = analysis_result.get('forecast', {})
+    if 'trend_direction' in forecast:
+        st.markdown(f"**Xu hướng:** {forecast.get('trend_direction', 'Đang phân tích')}")
+    
+    # Top keywords
+    keywords = analysis_result.get('top_keywords', [])
+    if keywords:
+        st.markdown("**Từ khóa hàng đầu:**")
+        keyword_text = " • ".join([k['keyword'] for k in keywords[:5]])
+        st.markdown(f"`{keyword_text}`")
 
 def render_forecast_section(forecast_data, subreddit):
     """Hiển thị phần dự báo xu hướng với xử lý lỗi"""
@@ -677,57 +667,26 @@ def render_keywords(keywords, subreddit):
             """, unsafe_allow_html=True)
 
 # --- 6. TRENDING CARD CẢI TIẾN ---
-def render_trending_card(post, analyze_callback):
-    """Hiển thị card bài viết trending với design cải tiến"""
-    title = post.get('title', 'No Title')
-    sub = post.get('subreddit', 'reddit')
-    author = post.get('author', 'unknown')
-    time_str = post.get('time_str', '')
-    thumbnail = post.get('thumbnail')
-    link = post.get('url')
-    post_id = post.get('id', str(hash(title)))
-
-    # Sử dụng container với class trending-post-card
+def render_trending_card(post, callback=None):  # ✅ THÊM callback=None
+    """Hiển thị card bài viết trending"""
     with st.container():
-        st.markdown(f"<div class='trending-post-card'>", unsafe_allow_html=True)
+        col1, col2 = st.columns([3, 1])
         
-        col1, col2 = st.columns([1, 4])
         with col1:
-            st.markdown(f"<div class='post-thumbnail-container'>", unsafe_allow_html=True)
-            if thumbnail and thumbnail.startswith('http'):
-                st.image(thumbnail, use_container_width=True, output_format="PNG")
-            else:
-                # CẢI TIẾN: Icon placeholder lớn hơn, rõ ràng hơn
-                st.markdown(f"""
-                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%;">
-                    <span style="font-size: 2.5rem; margin-bottom: 8px;">📰</span>
-                    <span style="font-size: 0.7rem; color: var(--text-sub); text-align: center;">No Image</span>
-                </div>
-                """, unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-
+            st.markdown(f"### 📝 {post.get('title', 'No Title')[:70]}...")
+            st.caption(f"r/{post.get('subreddit', 'unknown')} • 👤 {post.get('author', 'unknown')}")
+            st.caption(f"👍 {post.get('score', 0)} • 💬 {post.get('comments_count', 0)} • 🕐 {post.get('time_str', '')}")
+        
         with col2:
-            st.markdown(f"<div class='post-content'>", unsafe_allow_html=True)
-            # Tiêu đề với link
-            st.markdown(f"<h4><a href='{link}' target='_blank' style='text-decoration:none; color:var(--text-main);'>{title}</a></h4>", unsafe_allow_html=True)
-            # Meta information
-            st.markdown(f"<div class='post-meta'>r/{sub} • {author} • {time_str}</div>", unsafe_allow_html=True)
-            
-            # Actions - SỬA LỖI: st.link_button không có tham số key
-            st.markdown(f"<div class='post-actions'>", unsafe_allow_html=True)
-            btn_analyze_key = f"btn_analyze_trend_{post_id}_{_safe_hash_data(title)}"
-            if st.button("⚡ Phân tích", key=btn_analyze_key, type="primary", help="Phân tích bài viết này"):
-                analyze_callback(link)
-            
-            # SỬA: Bỏ tham số key trong st.link_button
-            st.link_button("🌐 Xem gốc ↗️", link)
-            st.markdown("</div>", unsafe_allow_html=True) # Đóng post-actions
-            st.markdown("</div>", unsafe_allow_html=True) # Đóng post-content
+            if st.button("🔍 Phân tích", key=f"analyze_{post.get('id', '')}"):
+                if callback:  # ✅ BÂY GIỜ callback đã được định nghĩa
+                    callback(post.get('url', ''))
+                else:
+                    st.session_state.analyze_url = post.get('url', '')
+                    st.session_state.auto_run = True
+                    st.session_state.page = "Analysis"
+                    st.rerun()
 
-        st.markdown("</div>", unsafe_allow_html=True) # Đóng trending-post-card
-        st.markdown("<div class='spacer-sm'></div>", unsafe_allow_html=True) # Khoảng cách
-
-# --- 7. ANALYSIS RESULT COMPONENTS CẢI TIẾN ---
 def render_analysis_result_full(data):
     """Hiển thị kết quả phân tích bài viết với xử lý lỗi"""
     if not data or 'meta' not in data or 'df' not in data:
@@ -738,8 +697,21 @@ def render_analysis_result_full(data):
     df = data['df']
     summary = data.get('summary', 'Chưa có phân tích AI.')
 
-    st.markdown(f"## 📄 {meta.get('title', 'Không có tiêu đề')}")
-    st.caption(f"👤 Tác giả: {meta.get('author', 'Ẩn danh')} • 🏷️ Subreddit: r/{meta.get('subreddit', 'unknown')} • 💬 {meta.get('count', 0)} bình luận")
+    # SỬA: Thêm encode/decode để fix lỗi tiếng Việt
+    def safe_decode(text):
+        """Xử lý encode/decode an toàn cho tiếng Việt"""
+        if isinstance(text, str):
+            try:
+                # Kiểm tra xem có bị mã hóa sai không
+                if '\\u' in text or '\\x' in text:
+                    return text.encode().decode('unicode-escape')
+                return text
+            except:
+                return text
+        return str(text)
+
+    st.markdown(f"## 📄 {safe_decode(meta.get('title', 'Không có tiêu đề'))}")
+    st.caption(f"👤 Tác giả: {safe_decode(meta.get('author', 'Ẩn danh'))} • 🏷️ Subreddit: r/{meta.get('subreddit', 'unknown')} • 💬 {meta.get('count', 0)} bình luận")
 
     # Metrics Overview với stat-box cải tiến
     c1, c2, c3, c4 = st.columns(4)
@@ -759,7 +731,7 @@ def render_analysis_result_full(data):
 
     st.markdown("<div class='spacer-md'></div>", unsafe_allow_html=True)
 
-    # Tabs - SỬA LỖI: st.tabs không có tham số key
+    # Tabs
     t1, t2, t3 = st.tabs(["🤖 AI Insight", "📊 Biểu Đồ", "📋 Dữ Liệu Chi Tiết"])
 
     with t1: 
@@ -768,76 +740,67 @@ def render_analysis_result_full(data):
         render_charts(df, meta.get('title', ''))
     with t3: 
         render_data_table(df, meta.get('title', ''))
+        
+        
 
 def render_charts(df, title):
-    """Hiển thị biểu đồ phân tích với xử lý lỗi và loading status"""
+    """Hiển thị biểu đồ phân tích"""
     if df.empty:
         st.info("📊 Chưa có đủ dữ liệu để vẽ biểu đồ.")
         return
 
     chart_colors = [COLORS['primary'], COLORS['danger'], COLORS['warning'], COLORS['accent']]
     
-    with st.status("🔄 Đang tải biểu đồ...", expanded=False) as status:
-        try:
-            c1, c2 = st.columns(2)
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.markdown("##### 🎭 Phân bố Cảm Xúc")
+        if 'sentiment' in df.columns and not df['sentiment'].empty:
+            sentiment_counts = df['sentiment'].value_counts().reset_index()
+            sentiment_counts.columns = ['sentiment', 'count']
+            fig = px.pie(sentiment_counts, names='sentiment', values='count', hole=0.6, color_discrete_sequence=chart_colors)
+            fig.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", 
+                plot_bgcolor="rgba(0,0,0,0)", 
+                font_color=COLORS['text_main'], 
+                showlegend=True, 
+                margin=dict(t=20, b=20, l=20, r=20), 
+                legend=dict(orientation="h", yanchor="bottom", y=-0.2)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("ℹ️ Không có dữ liệu cảm xúc để vẽ biểu đồ tròn.")
+    
+    with c2:
+        st.markdown("##### 🌊 Diễn biến theo thời gian")
+        if 'timestamp' in df.columns and 'polarity' in df.columns and len(df) > 1:
+            df_sorted = df.sort_values('timestamp')
+            df_sorted['timestamp'] = pd.to_datetime(df_sorted['timestamp'], errors='coerce')
+            df_sorted = df_sorted.dropna(subset=['timestamp'])
             
-            with c1:
-                st.markdown("##### 🎭 Phân bố Cảm Xúc")
-                if 'sentiment' in df.columns and not df['sentiment'].empty:
-                    sentiment_counts = df['sentiment'].value_counts().reset_index()
-                    sentiment_counts.columns = ['sentiment', 'count']
-                    fig = px.pie(sentiment_counts, names='sentiment', values='count', hole=0.6, color_discrete_sequence=chart_colors)
-                    fig.update_layout(
-                        paper_bgcolor="rgba(0,0,0,0)", 
-                        plot_bgcolor="rgba(0,0,0,0)", 
-                        font_color=COLORS['text_main'], 
-                        showlegend=True, 
-                        margin=dict(t=20, b=20, l=20, r=20), 
-                        legend=dict(orientation="h", yanchor="bottom", y=-0.2)
-                    )
-                    pie_key = f"pie_chart_{_safe_hash_data(title)}"
-                    st.plotly_chart(fig, use_container_width=True, key=pie_key)
-                else:
-                    st.caption("ℹ️ Không có dữ liệu cảm xúc để vẽ biểu đồ tròn.")
-            
-            with c2:
-                st.markdown("##### 🌊 Diễn biến theo thời gian")
-                if 'timestamp' in df.columns and 'polarity' in df.columns and len(df) > 1:
-                    df_sorted = df.sort_values('timestamp')
-                    df_sorted['timestamp'] = pd.to_datetime(df_sorted['timestamp'], errors='coerce')
-                    df_sorted = df_sorted.dropna(subset=['timestamp'])
-                    
-                    if not df_sorted.empty:
-                        fig2 = px.scatter(
-                            df_sorted, 
-                            x='timestamp', 
-                            y='polarity', 
-                            color='sentiment', 
-                            color_discrete_sequence=chart_colors
-                        )
-                        fig2.update_layout(
-                            paper_bgcolor="rgba(0,0,0,0)", 
-                            plot_bgcolor="rgba(0,0,0,0)", 
-                            font_color=COLORS['text_main'], 
-                            xaxis=dict(showgrid=False), 
-                            yaxis=dict(showgrid=True, gridcolor='#333')
-                        )
-                        scatter_key = f"scatter_chart_{_safe_hash_data(title)}"
-                        st.plotly_chart(fig2, use_container_width=True, key=scatter_key)
-                    else:
-                        st.caption("ℹ️ Không đủ dữ liệu hợp lệ để vẽ biểu đồ diễn biến.")
-                else:
-                    st.info("📊 Cần ít nhất 2 bình luận có thời gian để vẽ biểu đồ.")
-
-            status.update(label="✅ Đã tải xong biểu đồ!", state="complete")
-            
-        except Exception as e:
-            status.update(label="❌ Lỗi tải biểu đồ", state="error")
-            st.error(f"Không thể vẽ biểu đồ do lỗi: {str(e)}")
-            st.info("💡 Vui lòng kiểm tra lại dữ liệu đầu vào.")
+            if not df_sorted.empty:
+                fig2 = px.scatter(
+                    df_sorted, 
+                    x='timestamp', 
+                    y='polarity', 
+                    color='sentiment', 
+                    color_discrete_sequence=chart_colors
+                )
+                fig2.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", 
+                    plot_bgcolor="rgba(0,0,0,0)", 
+                    font_color=COLORS['text_main'], 
+                    xaxis=dict(showgrid=False), 
+                    yaxis=dict(showgrid=True, gridcolor='#333')
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.caption("ℹ️ Không đủ dữ liệu hợp lệ để vẽ biểu đồ diễn biến.")
+        else:
+            st.info("📊 Cần ít nhất 2 bình luận có thời gian để vẽ biểu đồ.")
 
 def render_data_table(df, title):
-    """Hiển thị bảng dữ liệu với xử lý lỗi"""
+    """Hiển thị bảng dữ liệu"""
     if df.empty:
         st.info("📊 Không có dữ liệu để hiển thị.")
         return
@@ -846,22 +809,19 @@ def render_data_table(df, title):
     
     try:
         # Download button
-        csv = df.to_csv(index=False).encode('utf-8')
+        csv = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')  # SỬA: Dùng utf-8-sig cho Excel
         c1, c2 = st.columns([3, 1])
         with c2:
-            download_key = f"download_{_safe_hash_data(title)}"
             st.download_button(
                 label="📥 Tải xuống CSV",
                 data=csv,
                 file_name='reddit_data.csv',
                 mime='text/csv',
-                key=download_key,
                 use_container_width=True,
                 type="primary"
             )
         
-        # Data table
-        table_key = f"data_table_{_safe_hash_data(title)}"
+        # Data table - SỬA: Loại bỏ key parameter
         st.dataframe(
             df,
             use_container_width=True,
@@ -874,20 +834,94 @@ def render_data_table(df, title):
                 "author": st.column_config.TextColumn("Người dùng")
             },
             height=400,
-            hide_index=True,
-            key=table_key
+            hide_index=True
         )
         
     except Exception as e:
         st.error(f"❌ Không thể hiển thị bảng dữ liệu: {str(e)}")
 
 def render_ai_summary_box(summary_text, title):
-    """Hiển thị AI Insight"""
+    """Hiển thị AI Insight - SỬA LỖI ENCODING TIẾNG VIỆT"""
     st.markdown("### 🤖 AI Insight")
-    clean_text = summary_text.replace("```html", "").replace("```", "").replace("</div>", "")
     
-    st.markdown(f"""
-    <div class="ai-insight-box">
-        {clean_text}
-    </div>
-    """, unsafe_allow_html=True)
+    # Kiểm tra nếu AI không hoạt động
+    if not summary_text or summary_text.startswith("⚠️") or "AI quá tải" in summary_text or "AI chưa sẵn sàng" in summary_text:
+        if summary_text:
+            st.warning(summary_text)
+        else:
+            st.warning("⚠️ AI chưa sẵn sàng. Vui lòng cấu hình API key.")
+        return
+    
+    # SỬA: Xử lý encoding đơn giản và hiệu quả hơn
+    def safe_decode_text(text):
+        """Xử lý encoding an toàn"""
+        if not isinstance(text, str):
+            text = str(text)
+        
+        # Kiểm tra xem text có bị encode không đúng không
+        try:
+            # Thử decode từ bytes nếu cần
+            if isinstance(text, bytes):
+                text = text.decode('utf-8')
+            
+            # Fix các lỗi encoding tiếng Việt phổ biến
+            replacements = {
+                'Ã¡': 'á', 'Ã ': 'à', 'Ã£': 'ã', 'Ã¢': 'â', 'Ã¤': 'ä',
+                'Ã©': 'é', 'Ã¨': 'è', 'Ãª': 'ê', 'Ã«': 'ë',
+                'Ã³': 'ó', 'Ã²': 'ò', 'Ãµ': 'õ', 'Ã´': 'ô', 'Ã¶': 'ö',
+                'Ãº': 'ú', 'Ã¹': 'ù', 'Ã»': 'û', 'Ã¼': 'ü',
+                'Ã­': 'í', 'Ã¬': 'ì', 'Ã®': 'î', 'Ã¯': 'ï',
+                'Ã½': 'ý', 'Ã¿': 'ÿ',
+                'Ã§': 'ç', 'Ã±': 'ñ',
+            }
+            
+            for wrong, correct in replacements.items():
+                text = text.replace(wrong, correct)
+            
+            # Xử lý các ký tự unicode escape
+            if '\\u' in text:
+                try:
+                    text = text.encode('utf-8').decode('unicode-escape')
+                except:
+                    pass
+            
+            return text
+        except Exception as e:
+            # Nếu lỗi, trả về text gốc
+            return str(text)
+    
+    # Áp dụng decode
+    clean_text = safe_decode_text(summary_text)
+    
+    # Loại bỏ markdown code blocks và HTML tags
+    import re
+    clean_text = re.sub(r'```[a-z]*', '', clean_text)  # Xóa ``` và ngôn ngữ
+    clean_text = re.sub(r'<[^>]+>', '', clean_text)    # Xóa HTML tags
+    clean_text = clean_text.replace('```', '')         # Xóa phần còn lại
+    clean_text = clean_text.strip()
+    
+    # Format lại text thành markdown đẹp
+    lines = clean_text.split('\n')
+    formatted_lines = []
+    
+    for line in lines:
+        line = line.strip()
+        if line:
+            # Định dạng các tiêu đề
+            if line.startswith('### '):
+                formatted_lines.append(f"\n## {line[4:]}\n")
+            elif line.startswith('## '):
+                formatted_lines.append(f"\n### {line[3:]}\n")
+            elif line.startswith('# '):
+                formatted_lines.append(f"\n# {line[2:]}\n")
+            elif line.startswith('**') and line.endswith('**'):
+                formatted_lines.append(f"\n**{line[2:-2]}**\n")
+            elif line.startswith('- ') or line.startswith('• '):
+                formatted_lines.append(f"• {line[2:]}")
+            else:
+                formatted_lines.append(line)
+    
+    final_text = '\n'.join(formatted_lines)
+    
+    # Hiển thị với formatting
+    st.markdown(final_text)

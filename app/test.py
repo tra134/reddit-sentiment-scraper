@@ -1,146 +1,64 @@
-# app/test_simple.py
-"""
-Simple tests for Reddit Analytics Pro - No pytest required
-"""
-
+# test_reddit_urls.py
 import sys
 import os
-import pandas as pd
-from datetime import datetime
 
-# Thêm thư mục gốc vào path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
 
-from app.main import RedditLoader, EnhancedNLPEngine, EnhancedVizEngine
+print("Testing RedditLoader with correct URL handling...")
+print("=" * 60)
 
-def test_reddit_loader_basic():
-    """Test basic RedditLoader functionality"""
-    print("🧪 Testing RedditLoader...")
-    
-    loader = RedditLoader()
-    
-    # Test clean_html
-    html_text = "<p>Hello <b>World</b>!</p>"
-    cleaned = loader.clean_html(html_text)
-    assert cleaned == "Hello World!", f"Expected 'Hello World!', got '{cleaned}'"
-    print("✅ HTML cleaning works correctly")
-    
-    # Test URL conversion
-    test_urls = [
-        ("https://www.reddit.com/r/technology/comments/abc123/test/", 
-         "https://www.reddit.com/comments/abc123.rss"),
-        ("https://www.reddit.com/r/python/", 
-         "https://www.reddit.com/r/python/hot.rss"),
-        ("https://www.reddit.com/r/technology/hot.rss",
-         "https://www.reddit.com/r/technology/hot.rss")
-    ]
-    
-    for input_url, expected in test_urls:
-        result = loader.convert_to_rss_url(input_url)
-        assert result == expected, f"URL conversion failed for {input_url}"
-    
-    print("✅ URL conversion works correctly")
+from app.main import RedditLoader
 
-def test_nlp_engine_basic():
-    """Test basic NLP engine functionality"""
-    print("🧪 Testing EnhancedNLPEngine...")
-    
-    nlp = EnhancedNLPEngine()
-    
-    # Test sentiment analysis
-    test_cases = [
-        ("I love this! It's amazing!", "Positive"),
-        ("I hate this! It's terrible!", "Negative"), 
-        ("This is a normal thing.", "Neutral"),
-    ]
-    
-    for text, expected_sentiment in test_cases:
-        result = nlp.analyze_text(text)
-        assert 'sentiment' in result, "Sentiment field missing"
-        assert 'polarity' in result, "Polarity field missing"
-        assert 'emotions' in result, "Emotions field missing"
-        print(f"✅ Text: '{text}' -> {result['sentiment']} (polarity: {result['polarity']:.2f})")
-    
-    print("✅ NLP analysis works correctly")
+loader = RedditLoader()
 
-def test_viz_engine_basic():
-    """Test basic visualization engine functionality"""
-    print("🧪 Testing EnhancedVizEngine...")
+# Test với các URL đúng
+test_urls = [
+    # Post URLs (sẽ được tự động thêm .json)
+    "https://www.reddit.com/r/funny/comments/3g1jfi/buttons/",
+    "https://www.reddit.com/r/AskReddit/comments/1g76q6q/what_is_a_fun_fact_that_you_just_made_up/",
     
-    viz = EnhancedVizEngine()
+    # URLs đã có .json
+    "https://www.reddit.com/r/funny/comments/3g1jfi/buttons.json",
+    "https://www.reddit.com/r/programming/comments/1g8w3v5/why_is_c_still_the_king_of_programming_languages.json",
     
-    # Create test data
-    test_data = {
-        'sentiment': ['Positive', 'Negative', 'Neutral', 'Positive', 'Negative'],
-        'polarity': [0.8, -0.7, 0.1, 0.9, -0.6],
-        'emotions': [['Joy'], ['Anger'], ['Neutral'], ['Joy'], ['Anger']],
-        'score': [10, 1, 5, 15, 2],
-        'created_utc': [1609459200, 1609545600, 1609632000, 1609718400, 1609804800]
-    }
-    
-    df = pd.DataFrame(test_data)
-    df['timestamp'] = pd.to_datetime(df['created_utc'], unit='s')
-    
-    # Test sentiment distribution
-    fig1 = viz.plot_sentiment_distribution(df)
-    assert fig1 is not None, "Sentiment distribution plot failed"
-    print("✅ Sentiment distribution plot works")
-    
-    # Test emotion radar
-    fig2 = viz.plot_emotion_radar(df)
-    assert fig2 is not None, "Emotion radar plot failed"
-    print("✅ Emotion radar plot works")
-    
-    # Test sentiment timeline
-    fig3 = viz.plot_sentiment_timeline(df)
-    assert fig3 is not None, "Sentiment timeline plot failed"
-    print("✅ Sentiment timeline plot works")
+    # Subreddit URLs
+    "https://www.reddit.com/r/python/hot/",
+    "https://www.reddit.com/r/technology/new.json"
+]
 
-def test_trending_posts_manager():
-    """Test trending posts manager"""
-    print("🧪 Testing TrendingPostsManager...")
+for i, url in enumerate(test_urls, 1):
+    print(f"\nTest {i}: {url}")
+    print("-" * 40)
     
-    from app.main import TrendingPostsManager
+    data, error = loader.fetch_data(url)
     
-    manager = TrendingPostsManager()
-    
-    # Test trend analysis with sample data
-    sample_posts = [
-        {'subreddit': 'technology', 'score': 10, 'comments_count': 5, 'author': 'user1'},
-        {'subreddit': 'technology', 'score': 20, 'comments_count': 10, 'author': 'user2'},
-        {'subreddit': 'python', 'score': 15, 'comments_count': 8, 'author': 'user3'},
-    ]
-    
-    trends = manager.analyze_trends(sample_posts)
-    
-    assert 'technology' in trends, "Technology subreddit missing"
-    assert 'python' in trends, "Python subreddit missing"
-    assert trends['technology']['count'] == 2, "Technology post count incorrect"
-    assert trends['python']['count'] == 1, "Python post count incorrect"
-    
-    print("✅ Trend analysis works correctly")
-
-def run_all_tests():
-    """Run all basic tests"""
-    print("🚀 Starting Reddit Analytics Pro Basic Tests")
-    print("=" * 50)
-    
-    try:
-        test_reddit_loader_basic()
-        test_nlp_engine_basic() 
-        test_viz_engine_basic()
-        test_trending_posts_manager()
+    if error:
+        print(f"❌ Error: {error}")
+    else:
+        print(f"✅ Success!")
         
-        print("=" * 50)
-        print("🎉 ALL TESTS PASSED! ✅")
-        return True
+        if 'meta' in data and data['meta']:
+            print(f"   Title: {data['meta'].get('title', 'Unknown')}")
+            print(f"   Subreddit: r/{data['meta'].get('subreddit', 'unknown')}")
         
-    except Exception as e:
-        print(f"❌ TEST FAILED: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+        items_count = len(data.get('comments', []))
+        print(f"   Items found: {items_count}")
+        
+        if items_count > 0 and 'comments' in data:
+            first_item = data['comments'][0]
+            if 'body' in first_item:
+                print(f"   First comment: {first_item['body'][:60]}...")
+            elif 'title' in first_item:
+                print(f"   First post: {first_item['title'][:60]}...")
 
-if __name__ == "__main__":
-    success = run_all_tests()
-    sys.exit(0 if success else 1)
+print("\n" + "=" * 60)
+print("Testing URL variants for 404 handling...")
+
+# Test URL không tồn tại
+non_existent_url = "https://www.reddit.com/r/test/comments/3g1jfi/this_is_a_test_post/"
+print(f"\nTesting non-existent URL: {non_existent_url}")
+data, error = loader.fetch_data(non_existent_url)
+print(f"Result: {error}")

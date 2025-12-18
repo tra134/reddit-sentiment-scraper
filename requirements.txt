@@ -14,6 +14,7 @@ python-multipart
 
 # --- VISUALIZATION ---
 plotly
+openpyxl
 matplotlib>=3.7.0
 seaborn>=0.12.2
 wordcloud
@@ -34,3 +35,4 @@ feedparser
 prophet
 keybert
 sentence-transformers
+
