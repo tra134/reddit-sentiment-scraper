@@ -12,6 +12,11 @@ from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import spacy
 import re
+import sys
+import os
+import requests
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from config import Config
 from app.ml.sentiment_analyzer import SentimentAnalyzer
@@ -20,7 +25,7 @@ from app.ml.emotion_analyzer import EmotionAnalyzer
 
 logger = logging.getLogger(__name__)
 
-class AdvancedAnalysisService:
+class AnalysisService:
     """Advanced analysis service with multiple ML models"""
     
     def __init__(self):
@@ -493,3 +498,185 @@ class AdvancedAnalysisService:
                 'models_used': []
             }
         }
+        
+    
+    def summarize_with_gemini(self, text: str, language: str = "vi", max_length: int = 200) -> Dict[str, Any]:
+        """
+        Summarize text using Gemini API
+        
+        Args:
+            text: Text to summarize
+            language: Output language ('vi' for Vietnamese, 'en' for English)
+            max_length: Maximum summary length in characters
+            
+        Returns:
+            Dictionary containing summary and metadata
+        """
+        if not self.gemini_available:
+            return self._fallback_summarize(text, max_length)
+        
+        if not text or len(text.strip()) < 50:
+            return {
+                "summary": text[:max_length] if text else "Không có nội dung để tóm tắt",
+                "method": "no_content",
+                "confidence": 0.0
+            }
+        
+        try:
+            # Prepare prompt based on language
+            if language == "vi":
+                prompt = f"""
+                Hãy tóm tắt đoạn văn bản sau đây bằng tiếng Việt:
+                
+                {text}
+                
+                Yêu cầu:
+                1. Tóm tắt trong vòng {max_length} ký tự
+                2. Giữ lại ý chính và thông tin quan trọng
+                3. Viết bằng văn phong tự nhiên, dễ hiểu
+                4. Nếu có số liệu hoặc thông tin cụ thể, hãy giữ lại
+                5. Tập trung vào thông điệp chính
+                
+                Tóm tắt:
+                """
+            else:
+                prompt = f"""
+                Please summarize the following text in English:
+                
+                {text}
+                
+                Requirements:
+                1. Summarize within {max_length} characters
+                2. Keep main ideas and important information
+                3. Write in natural, easy-to-understand language
+                4. Keep specific data or important details
+                5. Focus on the main message
+                
+                Summary:
+                """
+            
+            # Prepare request payload
+            payload = {
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "temperature": 0.7,
+                    "topK": 1,
+                    "topP": 0.95,
+                    "maxOutputTokens": 500,
+                }
+            }
+            
+            headers = {"Content-Type": "application/json"}
+            
+            # Make API request
+            response = requests.post(
+                f"{self.gemini_api_url}?key={self.gemini_api_key}",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Extract summary from response
+                if "candidates" in result and len(result["candidates"]) > 0:
+                    summary = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    summary = self._clean_summary(summary, max_length)
+                    
+                    return {
+                        "summary": summary,
+                        "method": "gemini",
+                        "confidence": 0.9,
+                        "tokens_used": result.get("usageMetadata", {}).get("totalTokenCount", 0)
+                    }
+                else:
+                    logger.error("No candidates in Gemini response")
+                    return self._fallback_summarize(text, max_length)
+            
+            else:
+                logger.error(f"Gemini API error: {response.status_code} - {response.text}")
+                return self._fallback_summarize(text, max_length)
+                
+        except Exception as e:
+            logger.error(f"Error calling Gemini API: {e}")
+            return self._fallback_summarize(text, max_length)
+
+    def summarize_post_comments(self, post_title: str, comments: List[str], max_comments: int = 50) -> Dict[str, Any]:
+        """Summarize a Reddit post and its comments"""
+        comments_to_summarize = comments[:max_comments]
+        
+        all_text = f"Tiêu đề bài viết: {post_title}\n\nCác bình luận:\n"
+        for i, comment in enumerate(comments_to_summarize, 1):
+            all_text += f"{i}. {comment}\n"
+        
+        if self.gemini_available:
+            return self.summarize_with_gemini(all_text, language="vi", max_length=300)
+        else:
+            return self._summarize_post_fallback(post_title, comments_to_summarize)
+
+    def _fallback_summarize(self, text: str, max_length: int = 200) -> Dict[str, Any]:
+        """Fallback text summarization when Gemini is not available"""
+        if not text:
+            return {"summary": "Không có nội dung để tóm tắt", "method": "fallback", "confidence": 0.0}
+        
+        sentences = re.split(r'[.!?]+', text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+        
+        if not sentences:
+            summary = text[:max_length]
+        elif len(sentences) <= 3:
+            summary = " ".join(sentences)[:max_length]
+        else:
+            middle_idx = len(sentences) // 2
+            selected_sentences = [sentences[0], sentences[middle_idx], sentences[-1]]
+            summary = " ".join(selected_sentences)[:max_length]
+        
+        if len(summary) < len(text):
+            summary += "..."
+            
+        return {"summary": summary, "method": "fallback", "confidence": 0.5}
+
+    def _summarize_post_fallback(self, post_title: str, comments: List[str]) -> Dict[str, Any]:
+        """Fallback summarization for Reddit posts"""
+        from collections import Counter
+        sentiments = [self.analyze_text(c)["sentiment"] for c in comments]
+        sentiment_counts = Counter(sentiments)
+        total_comments = len(comments)
+        
+        if total_comments == 0:
+            overall_sentiment = "Trung lập"
+        else:
+            pos = sum(sentiment_counts.get(s, 0) for s in ["Tích cực", "Rất tích cực"])
+            neg = sum(sentiment_counts.get(s, 0) for s in ["Tiêu cực", "Rất tiêu cực"])
+            overall_sentiment = "Tích cực" if pos > neg else ("Tiêu cực" if neg > pos else "Trung lập")
+        
+        summary = f"Bài viết '{post_title}' có {total_comments} bình luận. "
+        if total_comments > 0:
+            summary += f"Phản hồi chung: {overall_sentiment.lower()}. "
+            if sentiment_counts:
+                top_s, count = sentiment_counts.most_common(1)[0]
+                summary += f"{(count/total_comments)*100:.0f}% bình luận mang cảm xúc {top_s.lower()}. "
+        
+        summary += "Nội dung tập trung vào các chủ đề thảo luận chính."
+        return {"summary": summary, "method": "fallback_post", "confidence": 0.6}
+
+    def _clean_summary(self, summary: str, max_length: int) -> str:
+        """Clean and format the summary"""
+        summary = re.sub(r'[\*\#\_]', '', summary)
+        summary = re.sub(r'^\d+\.\s*', '', summary, flags=re.MULTILINE)
+        
+        if len(summary) > max_length:
+            sentences = re.split(r'(?<=[.!?])\s+', summary)
+            truncated = ""
+            for s in sentences:
+                if len(truncated + s) < max_length - 3:
+                    truncated += s + " "
+                else:
+                    break
+            summary = truncated.strip() or summary[:max_length - 3]
+            if not summary.endswith('.'): summary += "..."
+            
+        return summary.strip()

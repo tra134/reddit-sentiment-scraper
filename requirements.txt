@@ -36,3 +36,5 @@ prophet
 keybert
 sentence-transformers
 
+
+spacy

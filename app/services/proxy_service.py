@@ -1,3 +1,10 @@
+# ProxyService v2 - Production-grade
+# Improvements:
+# - ThreadPool validation (uses max_workers)
+# - Proxy scoring & cooldown
+# - Safe separation of proxies / working pool
+# - Faster selection & cleanup
+
 import requests
 import json
 import time
@@ -6,235 +13,164 @@ from typing import List, Dict, Optional
 import random
 from datetime import datetime, timedelta
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 
 class ProxyService:
-    """Manage proxy rotation and validation"""
-    
-    def __init__(self, proxy_file: str = None):
+    """Advanced proxy rotation & validation service"""
+
+    TEST_URLS = [
+        "https://httpbin.org/ip",
+        "https://api.ipify.org?format=json"
+    ]
+
+    def __init__(self, proxy_file: str = None, cooldown_seconds: int = 60):
         self.proxy_file = proxy_file or 'proxies/proxy_list.json'
-        self.proxies = []
-        self.working_proxies = []
-        self.failed_proxies = []
+        self.cooldown_seconds = cooldown_seconds
+
+        self.proxies: List[Dict] = []
+        self.working_proxies: Dict[str, Dict] = {}
         self.last_update = None
-        
+
         self.load_proxies()
-    
+
+    # -------------------------------------------------
+    # Persistence
+    # -------------------------------------------------
     def load_proxies(self):
-        """Load proxies from file"""
-        try:
-            if os.path.exists(self.proxy_file):
-                with open(self.proxy_file, 'r') as f:
-                    data = json.load(f)
-                    self.proxies = data.get('proxies', [])
-                    self.working_proxies = data.get('working_proxies', [])
-                    self.last_update = data.get('last_update')
-                
-                logger.info(f"✅ Loaded {len(self.proxies)} proxies, {len(self.working_proxies)} working")
-            else:
-                logger.warning("❌ Proxy file not found, creating empty list")
-                self._create_default_proxy_file()
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to load proxies: {e}")
+        if not os.path.exists(self.proxy_file):
             self._create_default_proxy_file()
-    
-    def _create_default_proxy_file(self):
-        """Create default proxy file structure"""
-        default_data = {
-            "proxies": [],
-            "working_proxies": [],
-            "last_update": None
-        }
-        
-        os.makedirs('proxies', exist_ok=True)
-        with open(self.proxy_file, 'w') as f:
-            json.dump(default_data, f, indent=2)
-        
-        self.proxies = []
-        self.working_proxies = []
-    
-    def add_proxy(self, proxy: str, proxy_type: str = "http"):
-        """Add a new proxy"""
-        proxy_data = {
-            "address": proxy,
-            "type": proxy_type,
-            "added_at": datetime.now().isoformat(),
-            "success_count": 0,
-            "fail_count": 0,
-            "last_used": None,
-            "last_checked": None,
-            "response_time": None
-        }
-        
-        self.proxies.append(proxy_data)
-        self.save_proxies()
-        logger.info(f"➕ Added proxy: {proxy}")
-    
-    def validate_proxy(self, proxy_data: Dict, timeout: int = 10) -> bool:
-        """Validate if proxy is working"""
+            return
+
         try:
-            proxy_address = proxy_data['address']
-            proxy_type = proxy_data['type']
-            
-            proxies = {
-                "http": f"{proxy_type}://{proxy_address}",
-                "https": f"{proxy_type}://{proxy_address}"
-            }
-            
-            start_time = time.time()
-            response = requests.get(
-                "https://httpbin.org/ip",
-                proxies=proxies,
-                timeout=timeout
-            )
-            response_time = round((time.time() - start_time) * 1000, 2)  # ms
-            
-            if response.status_code == 200:
-                proxy_data['success_count'] += 1
-                proxy_data['last_checked'] = datetime.now().isoformat()
-                proxy_data['response_time'] = response_time
-                
-                # Add to working proxies if not already there
-                if proxy_data not in self.working_proxies:
-                    self.working_proxies.append(proxy_data)
-                
-                logger.info(f"✅ Proxy validated: {proxy_address} ({response_time}ms)")
-                return True
-            else:
-                proxy_data['fail_count'] += 1
-                logger.warning(f"❌ Proxy failed validation: {proxy_address}")
-                return False
-                
+            with open(self.proxy_file, 'r') as f:
+                data = json.load(f)
+                self.proxies = data.get('proxies', [])
+                self.working_proxies = {
+                    p['address']: p for p in data.get('working_proxies', [])
+                }
+                self.last_update = data.get('last_update')
+
+            logger.info(f"Loaded {len(self.proxies)} proxies, {len(self.working_proxies)} working")
         except Exception as e:
-            proxy_data['fail_count'] += 1
-            logger.warning(f"❌ Proxy error: {proxy_address} - {e}")
-            return False
-    
-    def validate_all_proxies(self, max_workers: int = 5):
-        """Validate all proxies"""
-        logger.info(f"🔍 Validating {len(self.proxies)} proxies...")
-        
-        validated_count = 0
-        for proxy in self.proxies:
-            if self.validate_proxy(proxy):
-                validated_count += 1
-        
-        self.save_proxies()
-        logger.info(f"✅ Validation complete: {validated_count}/{len(self.proxies)} working")
-    
-    def get_working_proxy(self) -> Optional[Dict]:
-        """Get a random working proxy"""
-        if not self.working_proxies:
-            logger.warning("⚠️ No working proxies available")
-            return None
-        
-        # Sort by response time and success rate
-        sorted_proxies = sorted(
-            self.working_proxies,
-            key=lambda x: (
-                x.get('response_time', 9999),
-                -x.get('success_count', 0)
-            )
-        )
-        
-        # Pick from top 3 fastest
-        if len(sorted_proxies) > 3:
-            proxy = random.choice(sorted_proxies[:3])
-        else:
-            proxy = random.choice(sorted_proxies)
-        
-        proxy['last_used'] = datetime.now().isoformat()
-        self.save_proxies()
-        
-        logger.info(f"🔧 Selected proxy: {proxy['address']} ({proxy.get('response_time', '?')}ms)")
-        return proxy
-    
-    def get_proxy_string(self, proxy_data: Dict) -> str:
-        """Convert proxy data to string format"""
-        return f"{proxy_data['type']}://{proxy_data['address']}"
-    
-    def import_proxies_from_file(self, file_path: str):
-        """Import proxies from text file"""
-        try:
-            with open(file_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        # Handle different proxy formats
-                        if '://' in line:
-                            proxy_type, address = line.split('://')
-                        else:
-                            proxy_type = "http"
-                            address = line
-                        
-                        self.add_proxy(address, proxy_type)
-            
-            logger.info(f"📥 Imported proxies from {file_path}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to import proxies: {e}")
-    
-    def export_working_proxies(self, file_path: str):
-        """Export working proxies to file"""
-        try:
-            with open(file_path, 'w') as f:
-                for proxy in self.working_proxies:
-                    f.write(f"{proxy['type']}://{proxy['address']}\n")
-            
-            logger.info(f"💾 Exported {len(self.working_proxies)} working proxies to {file_path}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to export proxies: {e}")
-    
-    def get_statistics(self) -> Dict:
-        """Get proxy statistics"""
-        total = len(self.proxies)
-        working = len(self.working_proxies)
-        success_rate = (working / total * 100) if total > 0 else 0
-        
-        avg_response_time = 0
-        if working > 0:
-            avg_response_time = sum(
-                p.get('response_time', 0) for p in self.working_proxies
-            ) / working
-        
-        return {
-            "total_proxies": total,
-            "working_proxies": working,
-            "success_rate": round(success_rate, 2),
-            "average_response_time": round(avg_response_time, 2),
-            "last_update": self.last_update
-        }
-    
+            logger.error(f"Failed loading proxies: {e}")
+            self._create_default_proxy_file()
+
     def save_proxies(self):
-        """Save proxies to file"""
         try:
             data = {
-                "proxies": self.proxies,
-                "working_proxies": self.working_proxies,
-                "last_update": datetime.now().isoformat()
+                'proxies': self.proxies,
+                'working_proxies': list(self.working_proxies.values()),
+                'last_update': datetime.now().isoformat()
             }
-            
             with open(self.proxy_file, 'w') as f:
                 json.dump(data, f, indent=2)
-            
             self.last_update = data['last_update']
-            
         except Exception as e:
-            logger.error(f"❌ Failed to save proxies: {e}")
-    
-    def cleanup_failed_proxies(self, max_failures: int = 5):
-        """Remove proxies with too many failures"""
-        initial_count = len(self.proxies)
-        
-        self.proxies = [
-            p for p in self.proxies 
-            if p.get('fail_count', 0) < max_failures
-        ]
-        
-        removed_count = initial_count - len(self.proxies)
-        if removed_count > 0:
-            logger.info(f"🗑️ Removed {removed_count} failed proxies")
+            logger.error(f"Save failed: {e}")
+
+    def _create_default_proxy_file(self):
+        os.makedirs('proxies', exist_ok=True)
+        with open(self.proxy_file, 'w') as f:
+            json.dump({'proxies': [], 'working_proxies': [], 'last_update': None}, f, indent=2)
+
+    # -------------------------------------------------
+    # Core logic
+    # -------------------------------------------------
+    def add_proxy(self, address: str, proxy_type: str = 'http'):
+        self.proxies.append({
+            'address': address,
+            'type': proxy_type,
+            'success': 0,
+            'fail': 0,
+            'score': 0.0,
+            'last_used': None,
+            'last_checked': None,
+            'cooldown_until': None,
+            'response_time': None
+        })
+        self.save_proxies()
+
+    def _in_cooldown(self, proxy: Dict) -> bool:
+        cd = proxy.get('cooldown_until')
+        return cd and datetime.now() < datetime.fromisoformat(cd)
+
+    def validate_proxy(self, proxy: Dict, timeout: int = 8) -> bool:
+        if self._in_cooldown(proxy):
+            return False
+
+        test_url = random.choice(self.TEST_URLS)
+        proxies = {
+            'http': f"{proxy['type']}://{proxy['address']}",
+            'https': f"{proxy['type']}://{proxy['address']}"
+        }
+
+        try:
+            start = time.time()
+            r = requests.get(test_url, proxies=proxies, timeout=timeout)
+            elapsed = (time.time() - start) * 1000
+
+            if r.status_code == 200:
+                proxy['success'] += 1
+                proxy['score'] += 1
+                proxy['response_time'] = round(elapsed, 2)
+                proxy['last_checked'] = datetime.now().isoformat()
+                self.working_proxies[proxy['address']] = proxy
+                return True
+            else:
+                raise Exception('Bad status')
+
+        except Exception:
+            proxy['fail'] += 1
+            proxy['score'] -= 1
+            proxy['cooldown_until'] = (
+                datetime.now() + timedelta(seconds=self.cooldown_seconds)
+            ).isoformat()
+            self.working_proxies.pop(proxy['address'], None)
+            return False
+
+    def validate_all(self, max_workers: int = 10):
+        logger.info(f"Validating {len(self.proxies)} proxies with {max_workers} workers")
+        ok = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = [ex.submit(self.validate_proxy, p) for p in self.proxies]
+            for f in as_completed(futures):
+                if f.result():
+                    ok += 1
+        self.save_proxies()
+        logger.info(f"Validation done: {ok}/{len(self.proxies)} working")
+
+    # -------------------------------------------------
+    # Selection
+    # -------------------------------------------------
+    def get_working_proxy(self) -> Optional[Dict]:
+        if not self.working_proxies:
+            return None
+
+        candidates = list(self.working_proxies.values())
+        candidates.sort(key=lambda p: (-p['score'], p.get('response_time', 9999)))
+
+        proxy = random.choice(candidates[:min(5, len(candidates))])
+        proxy['last_used'] = datetime.now().isoformat()
+        self.save_proxies()
+        return proxy
+
+    def get_proxy_string(self, proxy: Dict) -> str:
+        return f"{proxy['type']}://{proxy['address']}"
+
+    # -------------------------------------------------
+    # Maintenance
+    # -------------------------------------------------
+    def cleanup(self, max_fail: int = 5):
+        before = len(self.proxies)
+        self.proxies = [p for p in self.proxies if p['fail'] < max_fail]
+        self.working_proxies = {
+            p['address']: p for p in self.proxies if p['address'] in self.working_proxies
+        }
+        removed = before - len(self.proxies)
+        if removed:
+            logger.info(f"Removed {removed} dead proxies")
             self.save_proxies()
