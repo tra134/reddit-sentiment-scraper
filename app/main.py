@@ -673,79 +673,53 @@ class EnhancedRedditClient:
             return None, f"Error: {str(e)}"
     
     def fetch_subreddit_trending(self, subreddit_name, limit=10, timeframe='day'):
-        """Fetch trending posts with cache support"""
-        # Check cache first
-        cache_key = f"{subreddit_name}:{timeframe}"
-        if self.cache_manager:
-            cached_data = self.cache_manager.get_trending(subreddit_name, timeframe)
-            if cached_data:
-                print(f"[Cache] Hit for trending: {cache_key}")
-                return cached_data, None
-        
-        try:
-            self._rate_limit()
-            
-            # Try with proxy first, then without
-            proxies = self._get_proxies()
-            attempts = [proxies, None] if proxies else [None]
-            
-            for proxy_attempt in attempts:
-                for mirror in self.mirrors:
-                    try:
-                        url = f"{mirror}/r/{subreddit_name}/top.json?limit={limit}&t={timeframe}"
+        """Fetch trending posts with safety checks for JSON and Mirror rotation"""
+        proxies = self._get_proxies()
+        for mirror in self.mirrors:
+            try:
+                # Chuẩn hóa URL để tránh lỗi dấu gạch chéo
+                base_url = mirror.rstrip('/')
+                url = f"{base_url}/r/{subreddit_name}/top.json?limit={limit}&t={timeframe}"
+                
+                print(f"[Trending] Thử lấy dữ liệu từ: {mirror}")
+                response = requests.get(url, headers=self.headers, proxies=proxies, timeout=5)
+                
+                # Kiểm tra phản hồi có phải là JSON hợp lệ không
+                content_type = response.headers.get('Content-Type', '')
+                if response.status_code == 200 and 'application/json' in content_type:
+                    data = response.json()
+                    posts = []
+                    
+                    # Trích xuất dữ liệu an toàn từ cấu trúc JSON của Reddit
+                    if 'data' in data and 'children' in data['data']:
+                        for child in data['data']['children']:
+                            p_data = child['data']
+                            posts.append({
+                                'id': p_data.get('id'),
+                                'title': p_data.get('title', 'No Title'),
+                                'author': p_data.get('author', 'unknown'),
+                                'score': p_data.get('score', 0),
+                                'comments_count': p_data.get('num_comments', 0),
+                                'url': f"https://www.reddit.com{p_data.get('permalink', '')}",
+                                'subreddit': subreddit_name,
+                                'time_str': self._format_time(p_data.get('created_utc', time.time())),
+                                'selftext': p_data.get('selftext', '')[:200]
+                            })
                         
-                        print(f"[Trending] Fetching {subreddit_name} from {mirror}")
-                        response = requests.get(
-                            url, 
-                            headers=self.headers, 
-                            proxies=proxy_attempt,
-                            timeout=8,
-                            verify=True
-                        )
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            posts = []
+                        # Lưu vào cache nếu lấy thành công
+                        if self.cache_manager:
+                            self.cache_manager.set_trending(subreddit_name, posts, timeframe)
                             
-                            for child in data['data']['children']:
-                                post_data = child['data']
-                                post = {
-                                    'id': post_data['id'],
-                                    'title': post_data['title'],
-                                    'author': post_data['author'],
-                                    'score': post_data['score'],
-                                    'comments_count': post_data['num_comments'],
-                                    'created_utc': post_data['created_utc'],
-                                    'url': f"https://www.reddit.com{post_data['permalink']}",
-                                    'subreddit': subreddit_name,
-                                    'time_str': self._format_time(post_data['created_utc']),
-                                    'upvote_ratio': post_data.get('upvote_ratio', 0),
-                                    'selftext': post_data.get('selftext', '')[:200] if post_data.get('selftext') else ''
-                                }
-                                posts.append(post)
-                            
-                            # Cache the result
-                            if self.cache_manager:
-                                self.cache_manager.set_trending(subreddit_name, posts, timeframe)
-                            
-                            return posts, None
-                        elif response.status_code == 429:
-                            print(f"[Rate Limit] Hit for trending {mirror}")
-                            time.sleep(2)
-                            
-                    except requests.exceptions.ProxyError:
-                        print(f"[Proxy] Failed for trending {mirror}")
-                        if self.proxy_manager:
-                            self.proxy_manager.mark_proxy_failure()
-                        continue
-                    except Exception as e:
-                        print(f"[Error] Trending {mirror}: {e}")
-                        continue
-            
-            return [], "Cannot fetch trending posts (all mirrors failed)"
-            
-        except Exception as e:
-            return [], f"Error: {str(e)}"
+                        return posts, None
+                else:
+                    print(f"⚠️ Mirror {mirror} trả về lỗi hoặc HTML (status: {response.status_code})")
+                    continue
+                    
+            except Exception as e:
+                print(f"❌ Lỗi khi kết nối tới {mirror}: {str(e)}")
+                continue
+                
+        return [], "Không thể kết nối tới bất kỳ nguồn dữ liệu nào (Tất cả Mirror đều thất bại)"
     
     def _get_proxies(self):
         """Get proxy configuration"""
