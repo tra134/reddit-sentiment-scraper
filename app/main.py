@@ -552,37 +552,40 @@ class EnhancedRedditClient:
         }
         
         # FIX: Updated mirror list with working mirrors
+        # Tổng hợp danh sách Mirror (25+ nguồn) giúp tối ưu khả năng Scraping
         self.mirrors = [
-            # --- NHÓM 1: ỔN ĐỊNH NHẤT ---
+            # --- Nhóm A: Redlib Ổn định nhất ---
             "https://safereddit.com",
-            "https://redlib.vling.moe",
-            "https://redlib.kitty.is",
-            "https://rl.pcom.net",
-            
-            # --- NHÓM 2: DỰ PHÒNG CHẤT LƯỢNG ---
+            "https://redlib.perennialte.ch",
+            "https://redlib.ducks.party",
             "https://redlib.projectsegfau.lt",
             "https://redlib.zapashny.cloud",
-            "https://redlib.seitan-ayumi.cf",
             "https://redlib.tux.pro",
-            
-            # --- NHÓM 3: INSTANCE QUỐC TẾ ---
             "https://redlib.matthew.sh",
             "https://redlib.freedit.eu",
-            "   https://redlib.backend.net",
             "https://redlib.crep.dev",
             "https://redlib.pisscloud.net",
-            
-            # --- NHÓM 4: CÁC NGUỒN PHỤ ---
+            "https://redlib.backend.net",
             "https://redlib.slipfox.xyz",
-            "https://redlib.no-logs.com",
+
+            # --- Nhóm B: Instance ít phổ biến (Vượt rào tốt) ---
+            "https://redlib.lunar.icu",
+            "https://redlib.r4fo.com",
             "https://redlib.nohost.network",
+            "https://redlib.no-logs.com",
             "https://redlib.466446.xyz",
-            "https://redlib.catsarch.com",
-            
-            # --- NHÓM 5: DỰ PHÒNG CUỐI ---
-            "https://reddit.invidiou.sh",
+            "https://redlib.silkky.cloud",
+            "https://redlib.amnesty.re",
+            "https://redlib.tux.pizza",
+
+            # --- Nhóm C: Libreddit Fallback ---
             "https://libreddit.spike.codes",
             "https://libreddit.totaldarkness.net",
+            "https://libreddit.bus-hit.me",
+            "https://libreddit.privacytools.io",
+            "https://libreddit.oxit.com",
+
+            # --- Nhóm D: Cuối cùng (Trực tiếp) ---
             "https://www.reddit.com"
         ]
         
