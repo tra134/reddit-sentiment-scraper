@@ -553,11 +553,12 @@ class EnhancedRedditClient:
         
         # FIX: Updated mirror list with working mirrors
         self.mirrors = [
-            "https://l.opnxng.com",
             "https://safereddit.com",
-            "https://libreddit.bus-hit.me", 
+            "https://libreddit.bus-hit.me",
+            "https://l.opnxng.com",
             "https://libreddit.projectsegfau.lt",
-            "https://lr.slipfox.xyz"
+            "https://lr.slipfox.xyz",
+            "https://reddit.invidiou.sh"
         ]
         
         self.cache_manager = cache_manager
