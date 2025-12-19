@@ -102,11 +102,14 @@ db_lock = threading.Lock()
 
 class DBManager:
     def __init__(self, db_name="reddit_sentiment.db"):
-        if os.environ.get('STREAMLIT_CLOUD'):
+        # FIX: Streamlit Cloud compatible database path
+        if os.environ.get('STREAMLIT_CLOUD') or 'STREAMLIT_SHARING' in os.environ:
             temp_dir = tempfile.gettempdir()
             db_path = os.path.join(temp_dir, db_name)
+            print(f"🌐 Running on Streamlit Cloud. Database path: {db_path}")
         else:
             db_path = db_name
+            print(f"💻 Running locally. Database path: {db_path}")
             
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.create_tables()
@@ -463,39 +466,52 @@ class ProxyManager:
         
         if PROXY_SERVICE_AVAILABLE:
             try:
-                self.proxy_service = ProxyService(
-                    proxy_file='proxies/proxy_list.json',
-                    cooldown_seconds=30
-                )
-                # Validate proxies on startup
-                threading.Thread(target=self._validate_proxies_background, daemon=True).start()
+                # FIX: Check if proxy file exists
+                proxy_file = 'proxies/proxy_list.json'
+                if os.path.exists(proxy_file):
+                    self.proxy_service = ProxyService(
+                        proxy_file=proxy_file,
+                        cooldown_seconds=30
+                    )
+                    # Validate proxies on startup
+                    threading.Thread(target=self._validate_proxies_background, daemon=True).start()
+                else:
+                    print(f"⚠️ Proxy file not found: {proxy_file}. Running without proxy.")
             except Exception as e:
                 print(f"⚠️ Failed to initialize ProxyService: {e}")
+        else:
+            print("ℹ️ Running without ProxyService")
     
     def _validate_proxies_background(self):
         """Validate proxies in background thread"""
         if self.proxy_service:
             try:
-                self.proxy_service.validate_all(max_workers=5)
-                print("✅ Proxy validation completed")
+                working_count = self.proxy_service.validate_all(max_workers=5)
+                print(f"✅ Proxy validation completed. {working_count} proxies available")
             except Exception as e:
                 print(f"⚠️ Proxy validation failed: {e}")
     
     def get_proxy(self):
         """Get a working proxy with rotation"""
         if not self.proxy_service:
+            print("ℹ️ No proxy service available")
             return None
         
-        # If current proxy has too many failures, get new one
-        if self.proxy_failures >= self.max_proxy_failures:
-            self.current_proxy = None
-            self.proxy_failures = 0
-        
-        if not self.current_proxy:
-            self.current_proxy = self.proxy_service.get_working_proxy()
-            self.proxy_failures = 0
-        
-        return self.current_proxy
+        # FIX: Handle case when no working proxies
+        try:
+            # If current proxy has too many failures, get new one
+            if self.proxy_failures >= self.max_proxy_failures:
+                self.current_proxy = None
+                self.proxy_failures = 0
+            
+            if not self.current_proxy:
+                self.current_proxy = self.proxy_service.get_working_proxy()
+                self.proxy_failures = 0
+            
+            return self.current_proxy
+        except Exception as e:
+            print(f"⚠️ Error getting proxy: {e}")
+            return None
     
     def mark_proxy_failure(self):
         """Mark current proxy as failed"""
@@ -512,11 +528,15 @@ class ProxyManager:
         if not proxy:
             return None
         
-        proxy_str = self.proxy_service.get_proxy_string(proxy)
-        return {
-            'http': proxy_str,
-            'https': proxy_str
-        }
+        try:
+            proxy_str = self.proxy_service.get_proxy_string(proxy)
+            return {
+                'http': proxy_str,
+                'https': proxy_str
+            }
+        except Exception as e:
+            print(f"⚠️ Error creating proxy dict: {e}")
+            return None
 
 
 # ==========================================
@@ -530,12 +550,14 @@ class EnhancedRedditClient:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (Reddit Sentiment Analyzer v2.0)'
         }
+        
+        # FIX: Updated mirror list with working mirrors
         self.mirrors = [
             "https://www.reddit.com",
-            "https://redlib.vling.moe",
-            "https://r.fxy.net",
-            "https://reddit.wip.la",
-            "https://reddit.0qz.fun"
+            "https://safereddit.com",
+            "https://libreddit.oxit.com", 
+            "https://l.opnxng.com",
+            "https://r.fxy.net"
         ]
         
         self.cache_manager = cache_manager
@@ -1333,26 +1355,11 @@ class RedditSentimentApp:
         
         st.markdown("## 🔍 Phân tích bài viết Reddit")
         
-        # URL input section
-        if UI_AVAILABLE:
-            st.markdown("""
-            <div class="dashboard-card">
-                <div class="card-title">🔗 Nhập URL bài viết Reddit</div>
-                <div class="card-desc">
-                    Dán link bài viết Reddit để phân tích cảm xúc cộng đồng
-                    <br><small>🚀 Sử dụng cache & proxy để tối ưu tốc độ</small>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("### 🔗 Nhập URL bài viết Reddit")
-            st.markdown("Dán link bài viết Reddit để phân tích cảm xúc cộng đồng")
-        
+        # FIX: Add clear label for accessibility (điểm nghẽn 3)
         url = st.text_input(
-            "",
+            "Dán URL bài viết tại đây",
             value=st.session_state.get('analyze_url', ''),
             placeholder="https://www.reddit.com/r/technology/comments/abc123/title_here/",
-            label_visibility="collapsed",
             help="Dán URL đầy đủ của bài viết Reddit (phải chứa 'reddit.com')"
         )
         
