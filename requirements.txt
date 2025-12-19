@@ -42,8 +42,4 @@ torch>=2.2.0 --index-url https://download.pytorch.org/whl/cpu
 spacy>=3.8.3
 blis>=1.0.0
 thinc>=8.2.0
-<<<<<<< HEAD
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
-=======
-https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
->>>>>>> 14e282fae0274e85ededba10a489e1ac1c0bd0a9
