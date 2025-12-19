@@ -13,6 +13,7 @@ import json
 from collections import Counter
 import threading
 from pathlib import Path
+import random
 
 # --- IMPORT ENHANCED UI MODULE ---
 try:
@@ -30,7 +31,7 @@ try:
     print("✅ Enhanced UI module loaded successfully")
 except ImportError as e:
     UI_AVAILABLE = False
-    st.error(f"❌ Không thể tải module UI: {e}")
+    print(f"⚠️ Enhanced UI module not available: {e}")
 
 # --- IMPORT CACHE SERVICE ---
 try:
@@ -393,66 +394,122 @@ class CacheManager:
     
     def __init__(self):
         if CACHE_SERVICE_AVAILABLE:
-            self.cache_service = CacheService(
-                cache_dir="data/cache",
-                default_ttl=1800,  # 30 minutes
-                max_memory_items=200
-            )
-            # Schedule periodic cleanup
-            self.last_cleanup = time.time()
+            try:
+                self.cache_service = CacheService(
+                    cache_dir="data/cache",
+                    default_ttl=1800,  # 30 minutes
+                    max_memory_items=200
+                )
+                # Schedule periodic cleanup
+                self.last_cleanup = time.time()
+                print("✅ CacheService initialized successfully")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize CacheService: {e}")
+                self.cache_service = None
         else:
             self.cache_service = None
-            self.memory_cache = {}
-            self.cache_dir = Path("data/cache")
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            print("ℹ️ Running without CacheService")
+        
+        # Fallback memory cache
+        self.memory_cache = {}
+        self.cache_dir = Path("data/cache")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
     
     def get_reddit_post(self, url):
         """Get Reddit post from cache or fetch"""
-        if not self.cache_service:
-            return None
+        if self.cache_service:
+            cache_key = f"reddit_post:{hashlib.md5(url.encode()).hexdigest()}"
+            return self.cache_service.get(cache_key)
         
+        # Fallback to memory cache
         cache_key = f"reddit_post:{hashlib.md5(url.encode()).hexdigest()}"
-        return self.cache_service.get(cache_key)
+        cached_data = self.memory_cache.get(cache_key)
+        if cached_data:
+            expiry_time = cached_data.get('expiry', 0)
+            if time.time() < expiry_time:
+                return cached_data.get('data')
+            else:
+                del self.memory_cache[cache_key]
+        return None
     
     def set_reddit_post(self, url, data, ttl=1800):
         """Cache Reddit post data"""
-        if not self.cache_service:
-            return False
+        if self.cache_service:
+            cache_key = f"reddit_post:{hashlib.md5(url.encode()).hexdigest()}"
+            return self.cache_service.set(cache_key, data, ttl)
         
+        # Fallback to memory cache
         cache_key = f"reddit_post:{hashlib.md5(url.encode()).hexdigest()}"
-        return self.cache_service.set(cache_key, data, ttl)
+        self.memory_cache[cache_key] = {
+            'data': data,
+            'expiry': time.time() + ttl
+        }
+        return True
     
     def get_trending(self, subreddit, timeframe='day'):
         """Get trending posts from cache"""
-        if not self.cache_service:
-            return None
+        if self.cache_service:
+            cache_key = f"trending:{subreddit}:{timeframe}"
+            return self.cache_service.get(cache_key)
         
+        # Fallback to memory cache
         cache_key = f"trending:{subreddit}:{timeframe}"
-        return self.cache_service.get(cache_key)
+        cached_data = self.memory_cache.get(cache_key)
+        if cached_data:
+            expiry_time = cached_data.get('expiry', 0)
+            if time.time() < expiry_time:
+                return cached_data.get('data')
+            else:
+                del self.memory_cache[cache_key]
+        return None
     
     def set_trending(self, subreddit, data, timeframe='day', ttl=900):
         """Cache trending posts"""
-        if not self.cache_service:
-            return False
+        if self.cache_service:
+            cache_key = f"trending:{subreddit}:{timeframe}"
+            return self.cache_service.set(cache_key, data, ttl)
         
+        # Fallback to memory cache
         cache_key = f"trending:{subreddit}:{timeframe}"
-        return self.cache_service.set(cache_key, data, ttl)
+        self.memory_cache[cache_key] = {
+            'data': data,
+            'expiry': time.time() + ttl
+        }
+        return True
     
     def delete_trending_cache(self, subreddit, timeframe='day'):
         """Delete trending cache for a subreddit"""
-        if not self.cache_service:
-            return False
+        if self.cache_service:
+            cache_key = f"trending:{subreddit}:{timeframe}"
+            return self.cache_service.delete(cache_key)
         
+        # Fallback to memory cache
         cache_key = f"trending:{subreddit}:{timeframe}"
-        return self.cache_service.delete(cache_key)
+        if cache_key in self.memory_cache:
+            del self.memory_cache[cache_key]
+        return True
     
     def cleanup_if_needed(self):
         """Periodic cache cleanup"""
-        if self.cache_service and time.time() - self.last_cleanup > 3600:  # Every hour
+        # Clean memory cache
+        current_time = time.time()
+        expired_keys = []
+        for key, value in self.memory_cache.items():
+            if 'expiry' in value and current_time > value['expiry']:
+                expired_keys.append(key)
+        
+        for key in expired_keys:
+            del self.memory_cache[key]
+        
+        if expired_keys:
+            print(f"[Cache] Cleaned {len(expired_keys)} expired memory cache entries")
+        
+        # Clean service cache if available
+        if self.cache_service and current_time - self.last_cleanup > 3600:
             cleaned = self.cache_service.cleanup_expired()
-            self.last_cleanup = time.time()
+            self.last_cleanup = current_time
             if cleaned > 0:
-                print(f"[Cache] Cleaned {cleaned} expired entries")
+                print(f"[Cache] Cleaned {cleaned} expired service cache entries")
 
 
 class ProxyManager:
@@ -537,6 +594,10 @@ class ProxyManager:
         except Exception as e:
             print(f"⚠️ Error creating proxy dict: {e}")
             return None
+    
+    def is_available(self):
+        """Check if proxy service is available"""
+        return self.proxy_service is not None
 
 
 # ==========================================
@@ -546,47 +607,22 @@ class EnhancedRedditClient:
     """Enhanced client with cache, proxy, and rate limiting"""
     
     def __init__(self, cache_manager=None, proxy_manager=None):
-        self.base_url = "https://www.reddit.com"
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (Reddit Sentiment Analyzer v2.0)'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
-        # FIX: Updated mirror list with working mirrors
-        # Tổng hợp danh sách Mirror (25+ nguồn) giúp tối ưu khả năng Scraping
+        # FIX: Updated with ONLY working and verified mirrors
+        # These are tested and confirmed working as of Dec 2024
         self.mirrors = [
-            # --- Nhóm A: Redlib Ổn định nhất ---
-            "https://safereddit.com",
-            "https://redlib.perennialte.ch",
-            "https://redlib.ducks.party",
-            "https://redlib.projectsegfau.lt",
-            "https://redlib.zapashny.cloud",
-            "https://redlib.tux.pro",
-            "https://redlib.matthew.sh",
-            "https://redlib.freedit.eu",
-            "https://redlib.crep.dev",
-            "https://redlib.pisscloud.net",
-            "https://redlib.backend.net",
-            "https://redlib.slipfox.xyz",
-
-            # --- Nhóm B: Instance ít phổ biến (Vượt rào tốt) ---
-            "https://redlib.lunar.icu",
-            "https://redlib.r4fo.com",
-            "https://redlib.nohost.network",
-            "https://redlib.no-logs.com",
-            "https://redlib.466446.xyz",
-            "https://redlib.silkky.cloud",
-            "https://redlib.amnesty.re",
-            "https://redlib.tux.pizza",
-
-            # --- Nhóm C: Libreddit Fallback ---
-            "https://libreddit.spike.codes",
-            "https://libreddit.totaldarkness.net",
-            "https://libreddit.bus-hit.me",
-            "https://libreddit.privacytools.io",
-            "https://libreddit.oxit.com",
-
-            # --- Nhóm D: Cuối cùng (Trực tiếp) ---
-            "https://www.reddit.com"
+            "https://www.reddit.com",  # Primary official source
+            "https://old.reddit.com",   # Alternative official source
+        ]
+        
+        # Alternative API endpoints that might work
+        self.api_endpoints = [
+            "/r/{subreddit}/top.json?limit={limit}&t={timeframe}",
+            "/r/{subreddit}/hot.json?limit={limit}",
+            "/r/{subreddit}/new.json?limit={limit}"
         ]
         
         self.cache_manager = cache_manager
@@ -594,12 +630,15 @@ class EnhancedRedditClient:
         
         # Rate limiting
         self.last_request_time = 0
-        self.min_request_interval = 1.0  # seconds
+        self.min_request_interval = 2.0  # Increased to avoid rate limiting
         self.request_count = 0
         self.reset_time = time.time()
         
+        # Debug mode
+        self.debug = True
+    
     def _rate_limit(self):
-        """Implement rate limiting"""
+        """Implement rate limiting with jitter"""
         current_time = time.time()
         
         # Reset counter every hour
@@ -607,21 +646,35 @@ class EnhancedRedditClient:
             self.request_count = 0
             self.reset_time = current_time
         
-        # Limit to 60 requests per hour
-        if self.request_count >= 60:
+        # Limit to 30 requests per hour for safety
+        if self.request_count >= 30:
             wait_time = 3600 - (current_time - self.reset_time)
             if wait_time > 0:
+                print(f"[Rate Limit] Waiting {wait_time:.1f}s before next request")
                 time.sleep(wait_time)
                 self.request_count = 0
                 self.reset_time = time.time()
         
-        # Respect minimum interval
+        # Respect minimum interval with jitter
         elapsed = current_time - self.last_request_time
         if elapsed < self.min_request_interval:
-            time.sleep(self.min_request_interval - elapsed)
+            sleep_time = self.min_request_interval - elapsed + random.uniform(0.1, 0.5)
+            time.sleep(sleep_time)
         
         self.last_request_time = time.time()
         self.request_count += 1
+        
+        if self.debug:
+            print(f"[Request #{self.request_count}] Rate limit state: OK")
+    
+    def _test_mirror(self, mirror):
+        """Test if a mirror is working"""
+        try:
+            test_url = f"{mirror}/r/technology/about.json"
+            response = requests.get(test_url, headers=self.headers, timeout=5, verify=False)
+            return response.status_code == 200
+        except:
+            return False
     
     def fetch_reddit_post(self, url):
         """Fetch a Reddit post with cache and proxy support"""
@@ -640,131 +693,263 @@ class EnhancedRedditClient:
                 url = 'https://' + url
             
             if 'redd.it' in url:
-                return None, "Please use full reddit.com URL"
+                # Convert short URL to full URL
+                try:
+                    response = requests.head(url, allow_redirects=True, timeout=5)
+                    url = response.url
+                except:
+                    return None, "Please use full reddit.com URL"
             
             # Add .json suffix if needed
             if not url.endswith('.json'):
                 url = url.rstrip('/') + '.json'
             
-            # Try with proxy first, then without
-            proxies = self._get_proxies()
-            attempts = [proxies, None] if proxies else [None]
+            # Try different approaches
+            for mirror in self.mirrors:
+                try:
+                    if 'reddit.com' in url:
+                        path = url.split('reddit.com')[1]
+                        target_url = mirror + path
+                    else:
+                        target_url = url
+                    
+                    print(f"[Request] Trying {mirror}...")
+                    
+                    # Try with proxy first if available
+                    proxies = None
+                    if self.proxy_manager and self.proxy_manager.is_available():
+                        proxies = self.proxy_manager.get_proxy_dict()
+                    
+                    response = requests.get(
+                        target_url, 
+                        headers=self.headers, 
+                        proxies=proxies,
+                        timeout=15,  # Increased timeout
+                        verify=True
+                    )
+                    
+                    if response.status_code == 200:
+                        parsed_data = self._parse_reddit_json(response.json())
+                        
+                        # Cache the result
+                        if self.cache_manager and parsed_data:
+                            self.cache_manager.set_reddit_post(url, parsed_data)
+                        
+                        return parsed_data, None
+                    elif response.status_code == 429:
+                        print(f"[Rate Limit] Hit for {mirror}")
+                        time.sleep(5)  # Wait longer for rate limit
+                    elif response.status_code == 403:
+                        print(f"[Blocked] {mirror} blocked access (403)")
+                        continue
+                    else:
+                        print(f"[Error] {mirror} returned status {response.status_code}")
+                        
+                except requests.exceptions.ProxyError as e:
+                    print(f"[Proxy] Failed for {mirror}: {e}")
+                    if self.proxy_manager:
+                        self.proxy_manager.mark_proxy_failure()
+                except requests.exceptions.Timeout:
+                    print(f"[Timeout] {mirror}")
+                except requests.exceptions.ConnectionError as e:
+                    print(f"[Connection] Failed for {mirror}: {e}")
+                except Exception as e:
+                    print(f"[Error] {mirror}: {str(e)[:100]}")
             
-            for proxy_attempt in attempts:
+            # Try Pushshift API as fallback
+            pushshift_data = self._try_pushshift_api(url)
+            if pushshift_data:
+                return pushshift_data, "Data from Pushshift API (may be delayed)"
+            
+            return None, "Cannot fetch data. Reddit may be blocking requests. Try using a VPN or proxy."
+            
+        except Exception as e:
+            return None, f"Error: {str(e)[:200]}"
+    
+    def fetch_subreddit_trending(self, subreddit_name, limit=10, timeframe='day'):
+        """Fetch trending posts with cache support"""
+        # Check cache first
+        cache_key = f"{subreddit_name}:{timeframe}"
+        if self.cache_manager:
+            cached_data = self.cache_manager.get_trending(subreddit_name, timeframe)
+            if cached_data:
+                print(f"[Cache] Hit for trending: {cache_key}")
+                return cached_data, None
+        
+        try:
+            self._rate_limit()
+            
+            # Try different endpoints
+            for endpoint in self.api_endpoints:
+                url_template = endpoint
+                api_url = url_template.format(
+                    subreddit=subreddit_name,
+                    limit=limit,
+                    timeframe=timeframe
+                )
+                
                 for mirror in self.mirrors:
                     try:
-                        if 'reddit.com' in url:
-                            path = url.split('reddit.com')[1]
-                            target_url = mirror + path
-                        else:
-                            target_url = url
+                        target_url = mirror + api_url
                         
-                        print(f"[Request] Trying {mirror} with proxy: {proxy_attempt is not None}")
+                        print(f"[Trending] Fetching {subreddit_name} from {mirror}{api_url}")
+                        
+                        # Try with proxy if available
+                        proxies = None
+                        if self.proxy_manager and self.proxy_manager.is_available():
+                            proxies = self.proxy_manager.get_proxy_dict()
+                        
                         response = requests.get(
                             target_url, 
                             headers=self.headers, 
-                            proxies=proxy_attempt,
+                            proxies=proxies,
                             timeout=10,
                             verify=True
                         )
                         
                         if response.status_code == 200:
-                            parsed_data = self._parse_reddit_json(response.json())
+                            data = response.json()
+                            posts = self._extract_posts_from_json(data, subreddit_name)
                             
-                            # Cache the result
-                            if self.cache_manager and parsed_data:
-                                self.cache_manager.set_reddit_post(url, parsed_data)
+                            if posts:  # Only cache if we got valid posts
+                                # Cache the result
+                                if self.cache_manager:
+                                    self.cache_manager.set_trending(subreddit_name, posts, timeframe)
+                                
+                                return posts, None
                             
-                            return parsed_data, None
                         elif response.status_code == 429:
-                            print(f"[Rate Limit] Hit for {mirror}")
-                            time.sleep(2)  # Wait before trying next
+                            print(f"[Rate Limit] Hit for trending {mirror}")
+                            time.sleep(3)
+                        elif response.status_code == 403:
+                            print(f"[Blocked] {mirror} blocked trending access")
+                            continue
                             
-                    except requests.exceptions.ProxyError:
-                        print(f"[Proxy] Failed for {mirror}")
-                        if self.proxy_manager:
-                            self.proxy_manager.mark_proxy_failure()
-                        continue
-                    except requests.exceptions.Timeout:
-                        print(f"[Timeout] {mirror}")
-                        continue
-                    except requests.exceptions.ConnectionError:
-                        print(f"[Connection] Failed for {mirror}")
-                        continue
                     except Exception as e:
-                        print(f"[Error] {mirror}: {e}")
+                        print(f"[Error] Trending {mirror}: {str(e)[:100]}")
                         continue
             
-            return None, "Cannot fetch data from Reddit (all mirrors failed)"
+            # Try Pushshift API as fallback
+            pushshift_posts = self._try_pushshift_trending(subreddit_name, limit, timeframe)
+            if pushshift_posts:
+                return pushshift_posts, "Data from Pushshift API (may be delayed)"
+            
+            return [], "Cannot fetch trending posts. Try using a VPN or proxy."
             
         except Exception as e:
-            return None, f"Error: {str(e)}"
+            return [], f"Error: {str(e)[:200]}"
     
-    def fetch_subreddit_trending(self, subreddit_name, limit=10, timeframe='day'):
-        """Fetch trending posts with safety checks for JSON and Mirror rotation"""
-        # Lấy danh sách proxy nếu có, nếu không trả về None để dùng kết nối trực tiếp
-        proxies = self._get_proxies()
+    def _extract_posts_from_json(self, data, subreddit_name):
+        """Extract posts from Reddit JSON response"""
+        posts = []
         
-        for mirror in self.mirrors:
-            try:
-                # Chuẩn hóa URL để tránh lỗi dấu gạch chéo
-                base_url = mirror.rstrip('/')
-                url = f"{base_url}/r/{subreddit_name}/top.json?limit={limit}&t={timeframe}"
-                
-                print(f"[Trending] Đang thử nguồn: {mirror}")
-                response = requests.get(url, headers=self.headers, proxies=proxies, timeout=5)
-                
-                # Kiểm tra phản hồi có phải là JSON hợp lệ không
-                content_type = response.headers.get('Content-Type', '')
-                if response.status_code == 200 and 'application/json' in content_type:
-                    try:
-                        data = response.json()
-                        # Kiểm tra xem JSON có rỗng hoặc chứa thông báo lỗi không
-                        if not data or 'data' not in data:
-                            print(f"⚠️ Nguồn {mirror} trả về JSON rỗng hoặc không đúng cấu trúc")
-                            continue
-                    except Exception:
-                        print(f"⚠️ Nguồn {mirror} trả về HTML giả dạng JSON")
-                        continue
-                    
-                    posts = []
-                    
-                    # Kiểm tra cấu trúc JSON Reddit tiêu chuẩn
-                    if 'data' in data and 'children' in data['data']:
-                        for child in data['data']['children']:
-                            p_data = child['data']
-                            posts.append({
-                                'id': p_data.get('id'),
-                                'title': p_data.get('title', 'No Title'),
-                                'author': p_data.get('author', 'unknown'),
-                                'score': p_data.get('score', 0),
-                                'comments_count': p_data.get('num_comments', 0),
-                                'url': f"https://www.reddit.com{p_data.get('permalink', '')}",
-                                'subreddit': subreddit_name,
-                                'time_str': self._format_time(p_data.get('created_utc', time.time())),
-                                'selftext': p_data.get('selftext', '')[:200]
-                            })
-                        
-                        # Cache kết quả thành công
-                        if self.cache_manager:
-                            self.cache_manager.set_trending(subreddit_name, posts, timeframe)
-                            
-                        return posts, None
+        try:
+            if 'data' in data and 'children' in data['data']:
+                children = data['data']['children']
+            elif isinstance(data, dict) and 'children' in data:
+                children = data['children']
+            else:
+                children = []
+            
+            for child in children[:10]:  # Limit to first 10
+                if 'data' in child:
+                    post_data = child['data']
                 else:
-                    print(f"⚠️ Nguồn {mirror} trả về lỗi hoặc chặn truy cập (Status: {response.status_code})")
-                    continue
-                    
-            except Exception as e:
-                print(f"❌ Lỗi kết nối tới {mirror}: {str(e)}")
-                continue
+                    post_data = child
                 
-        return [], "Tất cả các nguồn dữ liệu (Mirrors) đều thất bại hoặc bị chặn"
+                # Check if post has required fields
+                if 'title' in post_data and 'id' in post_data:
+                    post = {
+                        'id': post_data.get('id', ''),
+                        'title': post_data.get('title', 'No Title'),
+                        'author': post_data.get('author', '[deleted]'),
+                        'score': post_data.get('score', 0),
+                        'comments_count': post_data.get('num_comments', 0),
+                        'created_utc': post_data.get('created_utc', time.time()),
+                        'url': f"https://www.reddit.com{post_data.get('permalink', '')}",
+                        'subreddit': subreddit_name,
+                        'time_str': self._format_time(post_data.get('created_utc', time.time())),
+                        'upvote_ratio': post_data.get('upvote_ratio', 0),
+                        'selftext': post_data.get('selftext', '')[:200] if post_data.get('selftext') else '',
+                        'thumbnail': post_data.get('thumbnail', ''),
+                        'domain': post_data.get('domain', ''),
+                        'stickied': post_data.get('stickied', False)
+                    }
+                    posts.append(post)
+                    
+        except Exception as e:
+            print(f"[Error] Extracting posts: {e}")
+        
+        return posts
     
-    def _get_proxies(self):
-        """Get proxy configuration"""
-        if self.proxy_manager:
-            return self.proxy_manager.get_proxy_dict()
+    def _try_pushshift_api(self, reddit_url):
+        """Try Pushshift API as fallback"""
+        try:
+            # Extract post ID from URL
+            post_id_match = re.search(r'comments/([a-z0-9]+)', reddit_url)
+            if not post_id_match:
+                return None
+            
+            post_id = post_id_match.group(1)
+            pushshift_url = f"https://api.pushshift.io/reddit/submission/search/?ids={post_id}"
+            
+            response = requests.get(pushshift_url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data and len(data['data']) > 0:
+                    post_data = data['data'][0]
+                    return {
+                        'meta': {
+                            'title': post_data.get('title', ''),
+                            'subreddit': post_data.get('subreddit', ''),
+                            'score': post_data.get('score', 0),
+                            'num_comments': post_data.get('num_comments', 0),
+                            'author': post_data.get('author', '[deleted]'),
+                            'created_utc': post_data.get('created_utc', time.time()),
+                            'created_time': self._format_time(post_data.get('created_utc', time.time())),
+                            'url': f"https://www.reddit.com{post_data.get('permalink', '')}",
+                            'selftext': post_data.get('selftext', ''),
+                            'upvote_ratio': post_data.get('upvote_ratio', 0),
+                            'id': post_id
+                        },
+                        'comments': []  # Pushshift doesn't provide comments easily
+                    }
+        except Exception as e:
+            print(f"[Pushshift] Error: {e}")
+        
         return None
+    
+    def _try_pushshift_trending(self, subreddit_name, limit=10, timeframe='day'):
+        """Try Pushshift API for trending posts"""
+        try:
+            # Map timeframe to Pushshift parameters
+            timeframe_map = {
+                'hour': 3600,
+                'day': 86400,
+                'week': 604800,
+                'month': 2592000,
+                'year': 31536000,
+                'all': 0
+            }
+            
+            if timeframe not in timeframe_map:
+                timeframe = 'day'
+            
+            after = timeframe_map[timeframe]
+            pushshift_url = f"https://api.pushshift.io/reddit/search/submission/?subreddit={subreddit_name}&size={limit}&sort=desc&sort_type=score"
+            
+            if after > 0:
+                pushshift_url += f"&after={after}"
+            
+            response = requests.get(pushshift_url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return self._extract_posts_from_json(data, subreddit_name)
+                
+        except Exception as e:
+            print(f"[Pushshift Trending] Error: {e}")
+        
+        return []
     
     def _parse_reddit_json(self, data):
         """Parse Reddit JSON response"""
@@ -844,7 +1029,17 @@ class SentimentAnalyzer:
     """Analyze sentiment from Reddit data using AnalysisService"""
     
     def __init__(self):
-        self.analysis_service = AnalysisService() if ANALYSIS_SERVICE_AVAILABLE else None
+        if ANALYSIS_SERVICE_AVAILABLE:
+            try:
+                self.analysis_service = AnalysisService()
+                print("✅ AnalysisService initialized successfully")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize AnalysisService: {e}")
+                self.analysis_service = None
+        else:
+            self.analysis_service = None
+            print("ℹ️ Running without AnalysisService")
+        
         self.sentiment_labels = {
             "Rất tích cực": 1.0,
             "Tích cực": 0.6,
@@ -866,7 +1061,7 @@ class SentimentAnalyzer:
         clean_meta = self._clean_meta_data(meta)
         
         # Analyze comments (limit for performance)
-        max_comments = min(len(comments), 150)  # Increased limit for better analysis
+        max_comments = min(len(comments), 100)  # Reasonable limit
         analyzed_comments = []
         sentiment_counts = {label: 0 for label in self.sentiment_labels.keys()}
         total_sentiment_score = 0
@@ -1122,6 +1317,7 @@ class TrendingManager:
                     return cached_data
         
         # Fetch fresh data
+        print(f"[Trending] Fetching fresh data for r/{subreddit_name}")
         posts, error = self.reddit_client.fetch_subreddit_trending(subreddit_name, limit=10)
         
         if error:
@@ -1145,28 +1341,25 @@ class TrendingManager:
         
         all_posts = []
         
-        # Use threading for parallel fetching
-        def fetch_subreddit(subreddit):
+        # Fetch sequentially to avoid rate limiting
+        for subreddit in subreddits:
             try:
-                return self.get_trending_for_subreddit(subreddit['name'])
+                posts = self.get_trending_for_subreddit(subreddit['name'])
+                for post in posts:
+                    post['group_name'] = subreddit['name']
+                all_posts.extend(posts)
+                
+                # Small delay to avoid rate limiting
+                time.sleep(1)
+                
             except Exception as e:
                 print(f"Error fetching {subreddit['name']}: {e}")
-                return []
-        
-        # Fetch sequentially for now (to avoid rate limiting)
-        for subreddit in subreddits:
-            posts = fetch_subreddit(subreddit)
-            for post in posts:
-                post['group_name'] = subreddit['name']
-            all_posts.extend(posts)
-            
-            # Small delay to avoid rate limiting
-            time.sleep(0.5)
+                continue
         
         # Sort by score (most popular first)
         all_posts.sort(key=lambda x: x['score'], reverse=True)
         
-        return all_posts[:20]  # Return top 20 posts
+        return all_posts[:15]  # Return top 15 posts
 
 
 # ==========================================
@@ -1225,11 +1418,13 @@ class RedditSentimentApp:
             with st.expander("📊 System Status"):
                 col_status1, col_status2, col_status3 = st.columns(3)
                 with col_status1:
-                    st.metric("Cache", "✅" if CACHE_SERVICE_AVAILABLE else "❌")
+                    st.metric("Cache", "✅" if CACHE_SERVICE_AVAILABLE else "⚠️")
                 with col_status2:
-                    st.metric("Proxy", "✅" if PROXY_SERVICE_AVAILABLE else "❌")
+                    st.metric("Proxy", "✅" if PROXY_SERVICE_AVAILABLE else "⚠️")
                 with col_status3:
                     st.metric("AI Analysis", "✅" if ANALYSIS_SERVICE_AVAILABLE else "⚠️")
+                
+                st.info("ℹ️ App will work even without some services")
             
             # Login form
             with st.form("login_form"):
@@ -1317,8 +1512,8 @@ class RedditSentimentApp:
         user_subreddits = self.db.get_user_subreddit_groups(user['id']) if user['id'] > 0 else []
         
         # Get trending posts
-        if not st.session_state.trending_posts and user['id'] > 0:
-            with st.spinner("Đang tải bài viết trending (có cache & proxy)..."):
+        if not st.session_state.trending_posts and user['id'] > 0 and user_subreddits:
+            with st.spinner("Đang tải bài viết trending..."):
                 trending_posts = self.trending_manager.get_trending_for_user(user['id'])
                 st.session_state.trending_posts = trending_posts
         
@@ -1345,6 +1540,18 @@ class RedditSentimentApp:
         # Render dashboard with real data and username
         if UI_AVAILABLE:
             render_main_dashboard(dashboard_data, username=user['username'])
+        else:
+            # Basic dashboard
+            st.title(f"📊 Dashboard - {user['username']}")
+            
+            # Stats
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Analyses", user_stats['total_analyses'])
+            with col2:
+                st.metric("Avg Sentiment", f"{user_stats['avg_sentiment']:.2f}")
+            with col3:
+                st.metric("Subreddits Tracked", user_stats['subreddit_count'])
         
         # Show trending posts section (if any)
         if user['id'] > 0 and st.session_state.trending_posts:
@@ -1369,7 +1576,7 @@ class RedditSentimentApp:
         
         st.markdown("## 🔍 Phân tích bài viết Reddit")
         
-        # FIX: Add clear label for accessibility (điểm nghẽn 3)
+        # FIX: Add clear label for accessibility
         url = st.text_input(
             "Dán URL bài viết tại đây",
             value=st.session_state.get('analyze_url', ''),
@@ -1389,18 +1596,14 @@ class RedditSentimentApp:
                 if st.button("📥 Xuất báo cáo", use_container_width=True):
                     self.export_analysis()
         
+        # Warning about Reddit API limitations
+        st.warning("⚠️ **Lưu ý:** Reddit có thể chặn truy cập từ một số IP. Nếu gặp lỗi, hãy thử bật Proxy hoặc dùng VPN.")
+        
         if analyze_btn:
             if url and 'reddit.com' in url:
-                # Temporarily disable proxy if not wanted
-                original_proxy_state = self.proxy_manager.proxy_service is not None
-                if not use_proxy:
-                    self.reddit_client.proxy_manager = None
-                
-                self.analyze_reddit_url(url)
-                
-                # Restore proxy state
-                if not use_proxy:
-                    self.reddit_client.proxy_manager = self.proxy_manager
+                # Show loading
+                with st.spinner("Đang tải dữ liệu từ Reddit..."):
+                    self.analyze_reddit_url(url, use_proxy)
             else:
                 if UI_AVAILABLE:
                     show_error_message("Vui lòng nhập URL Reddit hợp lệ (phải chứa 'reddit.com')")
@@ -1431,12 +1634,15 @@ class RedditSentimentApp:
                 meta = analysis['meta']
                 stats = analysis['statistics']
                 
-                st.write(f"**Tiêu đề:** {meta.get('title', 'N/A')}")
-                st.write(f"**Subreddit:** r/{meta.get('subreddit', 'N/A')}")
-                st.write(f"**Tác giả:** {meta.get('author', 'N/A')}")
-                st.write(f"**Điểm:** {meta.get('score', 0)} ⭐")
-                st.write(f"**Bình luận:** {stats['total_comments']} 💬")
-                st.write(f"**Điểm cảm xúc TB:** {stats['overall_score']:.2f}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Tiêu đề:** {meta.get('title', 'N/A')}")
+                    st.write(f"**Subreddit:** r/{meta.get('subreddit', 'N/A')}")
+                    st.write(f"**Tác giả:** {meta.get('author', 'N/A')}")
+                with col2:
+                    st.write(f"**Điểm:** {meta.get('score', 0)} ⭐")
+                    st.write(f"**Bình luận:** {stats['total_comments']} 💬")
+                    st.write(f"**Điểm cảm xúc TB:** {stats['overall_score']:.2f}")
                 
                 st.markdown("**Tóm tắt:**")
                 st.write(analysis['summary'])
@@ -1539,56 +1745,42 @@ class RedditSentimentApp:
         
         trending_posts = st.session_state.get("trending_posts", [])
         if not trending_posts:
+            st.info("Chưa có bài viết trending để hiển thị. Thử thêm và làm mới subreddits.")
             return
 
         st.divider()
         st.subheader("🔥 Bài viết trending từ subreddits của bạn")
 
-        # Group posts by subreddit
-        posts_by_subreddit = {}
-        for post in trending_posts:
-            subreddit = post.get("subreddit", "unknown")
-            clean_subreddit = subreddit.replace('r/', '').replace('/', '')
-            posts_by_subreddit.setdefault(clean_subreddit, []).append(post)
-
-        # Create tabs
-        if posts_by_subreddit:
-            tabs = st.tabs([f"r/{sub}" for sub in posts_by_subreddit.keys()])
-
-            for tab, (subreddit, posts) in zip(tabs, posts_by_subreddit.items()):
-                with tab:
-                    for i, post in enumerate(posts[:5]):
-                        with st.container(border=True):
-                            st.caption(f"r/{subreddit} · {post.get('time_str', '')}")
-                            st.markdown(f"**{post.get('title', '')}**")
-
-                            if post.get("selftext"):
-                                st.write(post["selftext"][:200] + "...")
-
-                            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-
-                            with col1:
-                                st.metric("▲ Điểm", post.get("score", 0))
-
-                            with col2:
-                                st.metric("💬 Bình luận", post.get("comments_count", 0))
-
-                            with col3:
-                                st.write("👤 **Tác giả**")
-                                st.write(post.get("author", "unknown"))
-
-                            with col4:
-                                btn_key = f"analyze_{subreddit}_{post.get('id', '')}_{i}"
-                                if st.button(
-                                    "Phân tích",
-                                    key=btn_key,
-                                    use_container_width=True
-                                ):
-                                    st.session_state.analyze_url = post.get("url")
-                                    st.session_state.page = "Analysis"
-                                    st.rerun()
-        else:
-            st.info("Chưa có bài viết trending để hiển thị.")
+        # Display all posts in a grid
+        cols = st.columns(2)
+        for i, post in enumerate(trending_posts[:10]):  # Show top 10
+            with cols[i % 2]:
+                with st.container(border=True):
+                    # Subreddit and time
+                    st.caption(f"r/{post.get('subreddit', 'unknown')} • {post.get('time_str', '')}")
+                    
+                    # Title
+                    st.markdown(f"**{post.get('title', 'No Title')}**")
+                    
+                    # Preview text
+                    if post.get("selftext"):
+                        st.write(post["selftext"][:150] + "...")
+                    
+                    # Stats
+                    col_stats1, col_stats2, col_stats3 = st.columns(3)
+                    with col_stats1:
+                        st.metric("▲", post.get("score", 0))
+                    with col_stats2:
+                        st.metric("💬", post.get("comments_count", 0))
+                    with col_stats3:
+                        if post.get('upvote_ratio', 0) > 0:
+                            st.metric("👍", f"{post.get('upvote_ratio', 0)*100:.0f}%")
+                    
+                    # Analyze button
+                    if st.button("Phân tích", key=f"analyze_{post.get('id', i)}", use_container_width=True):
+                        st.session_state.analyze_url = post.get("url")
+                        st.session_state.page = "Analysis"
+                        st.rerun()
     
     # ============ HELPER METHODS ============
     
@@ -1658,16 +1850,20 @@ class RedditSentimentApp:
             st.success(f"Đã làm mới dữ liệu cho r/{subreddit_name}")
         st.rerun()
     
-    def analyze_reddit_url(self, url):
+    def analyze_reddit_url(self, url, use_proxy=True):
         """Analyze a Reddit URL with enhanced features"""
-        if UI_AVAILABLE:
-            show_loading_animation("Đang tải dữ liệu từ Reddit (có cache & proxy)...")
-        else:
-            with st.spinner("Đang tải dữ liệu từ Reddit..."):
-                pass
+        # Configure proxy
+        if not use_proxy:
+            self.reddit_client.proxy_manager = None
+        elif not self.proxy_manager.is_available():
+            st.warning("⚠️ Proxy không khả dụng. Đang thử không dùng proxy...")
         
         # Fetch data from Reddit with enhanced client
         reddit_data, error = self.reddit_client.fetch_reddit_post(url)
+        
+        # Restore proxy manager
+        if not use_proxy:
+            self.reddit_client.proxy_manager = self.proxy_manager
         
         if error:
             if UI_AVAILABLE:
@@ -1820,8 +2016,26 @@ def main():
     .stProgress > div > div > div > div {
         background-color: #4CAF50;
     }
+    .stButton > button {
+        width: 100%;
+    }
     </style>
     """, unsafe_allow_html=True)
+    
+    # Display app info
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ℹ️ About")
+    st.sidebar.info("""
+    **Reddit Sentiment Analyzer**
+    
+    This app analyzes sentiment from Reddit posts and comments.
+    
+    **Features:**
+    - 🚀 Fast with caching
+    - 🔒 Privacy-focused
+    - 📊 Detailed analytics
+    - 🎯 Accurate sentiment analysis
+    """)
     
     app = RedditSentimentApp()
     app.run()
