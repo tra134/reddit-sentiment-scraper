@@ -553,37 +553,36 @@ class EnhancedRedditClient:
         
         # FIX: Updated mirror list with working mirrors
         self.mirrors = [
-            # --- NHÓM 1: ĐỘ TIN CẬY CAO ---
+            # --- NHÓM 1: ỔN ĐỊNH NHẤT ---
             "https://safereddit.com",
-            "https://l.opnxng.com",
             "https://redlib.vling.moe",
-            "https://redlib.perennialte.ch",
             "https://redlib.kitty.is",
-            
-            # --- NHÓM 2: CÁC INSTANCE MỚI NỔI ---
             "https://rl.pcom.net",
-            "https://redlib.ducks.party",
-            "https://redlib.privacydev.net",
-            "https://redlib.projectsegfau.lt",
-            "https://redlib.nohost.network",
             
-            # --- NHÓM 3: INSTANCE DỰ PHÒNG (DÀNH CHO QUỐC TẾ) ---
+            # --- NHÓM 2: DỰ PHÒNG CHẤT LƯỢNG ---
+            "https://redlib.projectsegfau.lt",
+            "https://redlib.zapashny.cloud",
+            "https://redlib.seitan-ayumi.cf",
             "https://redlib.tux.pro",
+            
+            # --- NHÓM 3: INSTANCE QUỐC TẾ ---
             "https://redlib.matthew.sh",
             "https://redlib.freedit.eu",
-            "https://redlib.backend.net",
+            "   https://redlib.backend.net",
             "https://redlib.crep.dev",
-            
-            # --- NHÓM 4: CÁC INSTANCE ÍT NGƯỜI BIẾT (TRÁNH RATE LIMIT) ---
-            "https://redlib.seitan-ayumi.cf",
-            "https://redlib.zapashny.cloud",
             "https://redlib.pisscloud.net",
+            
+            # --- NHÓM 4: CÁC NGUỒN PHỤ ---
             "https://redlib.slipfox.xyz",
             "https://redlib.no-logs.com",
+            "https://redlib.nohost.network",
+            "https://redlib.466446.xyz",
+            "https://redlib.catsarch.com",
             
-            # --- NHÓM 5: DỰ PHÒNG CUỐI CÙNG ---
+            # --- NHÓM 5: DỰ PHÒNG CUỐI ---
             "https://reddit.invidiou.sh",
             "https://libreddit.spike.codes",
+            "https://libreddit.totaldarkness.net",
             "https://www.reddit.com"
         ]
         
