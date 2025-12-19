@@ -1,7 +1,7 @@
 # --- CORE FRAMEWORK ---
 streamlit
 pandas
-numpy<2.0.0
+numpy>=1.26.4,<2.0.0
 requests
 python-dotenv
 tqdm
