@@ -553,25 +553,37 @@ class EnhancedRedditClient:
         
         # FIX: Updated mirror list with working mirrors
         self.mirrors = [
-            # --- NHÓM ỔN ĐỊNH CAO ---
+            # --- NHÓM 1: ĐỘ TIN CẬY CAO ---
+            "https://safereddit.com",
             "https://l.opnxng.com",
-            "https://redlib.ducks.party",
+            "https://redlib.vling.moe",
             "https://redlib.perennialte.ch",
-            "https://redlib.privacydev.net",
+            "https://redlib.kitty.is",
             
-            # --- NHÓM DỰ PHÒNG 1 ---
+            # --- NHÓM 2: CÁC INSTANCE MỚI NỔI ---
+            "https://rl.pcom.net",
+            "https://redlib.ducks.party",
+            "https://redlib.privacydev.net",
+            "https://redlib.projectsegfau.lt",
             "https://redlib.nohost.network",
+            
+            # --- NHÓM 3: INSTANCE DỰ PHÒNG (DÀNH CHO QUỐC TẾ) ---
             "https://redlib.tux.pro",
             "https://redlib.matthew.sh",
             "https://redlib.freedit.eu",
-            
-            # --- NHÓM DỰ PHÒNG 2 ---
-            "https://redlib.kitty.is",
-            "https://redlib.crep.dev",
             "https://redlib.backend.net",
-            "https://redlib.pcom.net",
+            "https://redlib.crep.dev",
             
-            # --- DÙNG TRỰC TIẾP (Dễ bị 429 nếu không có Proxy) ---
+            # --- NHÓM 4: CÁC INSTANCE ÍT NGƯỜI BIẾT (TRÁNH RATE LIMIT) ---
+            "https://redlib.seitan-ayumi.cf",
+            "https://redlib.zapashny.cloud",
+            "https://redlib.pisscloud.net",
+            "https://redlib.slipfox.xyz",
+            "https://redlib.no-logs.com",
+            
+            # --- NHÓM 5: DỰ PHÒNG CUỐI CÙNG ---
+            "https://reddit.invidiou.sh",
+            "https://libreddit.spike.codes",
             "https://www.reddit.com"
         ]
         
@@ -703,7 +715,16 @@ class EnhancedRedditClient:
                 # Kiểm tra phản hồi có phải là JSON hợp lệ không
                 content_type = response.headers.get('Content-Type', '')
                 if response.status_code == 200 and 'application/json' in content_type:
-                    data = response.json()
+                    try:
+                        data = response.json()
+                        # Kiểm tra xem JSON có rỗng hoặc chứa thông báo lỗi không
+                        if not data or 'data' not in data:
+                            print(f"⚠️ Nguồn {mirror} trả về JSON rỗng hoặc không đúng cấu trúc")
+                            continue
+                    except Exception:
+                        print(f"⚠️ Nguồn {mirror} trả về HTML giả dạng JSON")
+                        continue
+                    
                     posts = []
                     
                     # Kiểm tra cấu trúc JSON Reddit tiêu chuẩn
