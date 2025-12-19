@@ -553,12 +553,26 @@ class EnhancedRedditClient:
         
         # FIX: Updated mirror list with working mirrors
         self.mirrors = [
-            "https://safereddit.com",
-            "https://libreddit.bus-hit.me",
+            # --- NHÓM ỔN ĐỊNH CAO ---
             "https://l.opnxng.com",
-            "https://libreddit.projectsegfau.lt",
-            "https://lr.slipfox.xyz",
-            "https://reddit.invidiou.sh"
+            "https://redlib.ducks.party",
+            "https://redlib.perennialte.ch",
+            "https://redlib.privacydev.net",
+            
+            # --- NHÓM DỰ PHÒNG 1 ---
+            "https://redlib.nohost.network",
+            "https://redlib.tux.pro",
+            "https://redlib.matthew.sh",
+            "https://redlib.freedit.eu",
+            
+            # --- NHÓM DỰ PHÒNG 2 ---
+            "https://redlib.kitty.is",
+            "https://redlib.crep.dev",
+            "https://redlib.backend.net",
+            "https://redlib.pcom.net",
+            
+            # --- DÙNG TRỰC TIẾP (Dễ bị 429 nếu không có Proxy) ---
+            "https://www.reddit.com"
         ]
         
         self.cache_manager = cache_manager
@@ -674,14 +688,16 @@ class EnhancedRedditClient:
     
     def fetch_subreddit_trending(self, subreddit_name, limit=10, timeframe='day'):
         """Fetch trending posts with safety checks for JSON and Mirror rotation"""
+        # Lấy danh sách proxy nếu có, nếu không trả về None để dùng kết nối trực tiếp
         proxies = self._get_proxies()
+        
         for mirror in self.mirrors:
             try:
                 # Chuẩn hóa URL để tránh lỗi dấu gạch chéo
                 base_url = mirror.rstrip('/')
                 url = f"{base_url}/r/{subreddit_name}/top.json?limit={limit}&t={timeframe}"
                 
-                print(f"[Trending] Thử lấy dữ liệu từ: {mirror}")
+                print(f"[Trending] Đang thử nguồn: {mirror}")
                 response = requests.get(url, headers=self.headers, proxies=proxies, timeout=5)
                 
                 # Kiểm tra phản hồi có phải là JSON hợp lệ không
@@ -690,7 +706,7 @@ class EnhancedRedditClient:
                     data = response.json()
                     posts = []
                     
-                    # Trích xuất dữ liệu an toàn từ cấu trúc JSON của Reddit
+                    # Kiểm tra cấu trúc JSON Reddit tiêu chuẩn
                     if 'data' in data and 'children' in data['data']:
                         for child in data['data']['children']:
                             p_data = child['data']
@@ -706,20 +722,20 @@ class EnhancedRedditClient:
                                 'selftext': p_data.get('selftext', '')[:200]
                             })
                         
-                        # Lưu vào cache nếu lấy thành công
+                        # Cache kết quả thành công
                         if self.cache_manager:
                             self.cache_manager.set_trending(subreddit_name, posts, timeframe)
                             
                         return posts, None
                 else:
-                    print(f"⚠️ Mirror {mirror} trả về lỗi hoặc HTML (status: {response.status_code})")
+                    print(f"⚠️ Nguồn {mirror} trả về lỗi hoặc chặn truy cập (Status: {response.status_code})")
                     continue
                     
             except Exception as e:
-                print(f"❌ Lỗi khi kết nối tới {mirror}: {str(e)}")
+                print(f"❌ Lỗi kết nối tới {mirror}: {str(e)}")
                 continue
                 
-        return [], "Không thể kết nối tới bất kỳ nguồn dữ liệu nào (Tất cả Mirror đều thất bại)"
+        return [], "Tất cả các nguồn dữ liệu (Mirrors) đều thất bại hoặc bị chặn"
     
     def _get_proxies(self):
         """Get proxy configuration"""
